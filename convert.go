@@ -3,14 +3,12 @@ package main
 // this file is from https://github.com/tmccombs/hcl2json/blob/master/convert/convert.go
 // there are some modifications to allow using a _JSON_ heredoc as a json blob
 
+// https://github.com/hashicorp/hcl2/issues/5
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +23,27 @@ import (
 
 type Options struct {
 	Simplify bool
+}
+
+var interval = map[string]time.Duration{
+	"ns": time.Nanosecond,
+	"ms": time.Millisecond,
+	"µ":  time.Microsecond,
+	"s":  time.Second,
+	"m":  time.Minute,
+	"h":  time.Hour,
+}
+
+func delay(str string) time.Duration {
+	var n int
+	var i string
+	if x, _ := fmt.Sscanf(str, "%d%s", &n, &i); x > 0 {
+		if d, ok := interval[i]; ok {
+			return time.Duration(n) * d
+		}
+	}
+
+	return time.Duration(0)
 }
 
 type converter struct {
@@ -290,98 +309,6 @@ func (c *converter) convertTemplateFor(expr *hclsyntax.ForExpr) (string, error) 
 func (c *converter) wrapExpr(expr hclsyntax.Expression) string {
 	return "${" + c.rangeSource(expr.Range()) + "}"
 }
-
-var jwtContext = hcl.EvalContext{
-	Functions: map[string]function.Function{
-		"now":      NowStr,
-		"file":     FileStr,
-		"unix":     UnixStr,
-		"duration": DurStr,
-	},
-}
-
-var pnContext = hcl.EvalContext{
-	Functions: map[string]function.Function{
-		"file": FileStr,
-	},
-}
-
-var bodyContext = hcl.EvalContext{
-	Functions: map[string]function.Function{
-		"file": FileStr,
-	},
-}
-
-var DurStr = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name: "duration",
-			Type: cty.String,
-		},
-	},
-	Type: function.StaticReturnType(cty.Number),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		dur, err := time.ParseDuration(args[0].AsString())
-		if err != nil {
-			return cty.NumberIntVal(0), fmt.Errorf("couldn't parse time duration")
-		}
-
-		return cty.NumberIntVal(time.Now().Add(dur).Unix()), nil
-	},
-})
-
-var UnixStr = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name:             "unix",
-			Type:             cty.String,
-			AllowDynamicType: true,
-			AllowMarked:      true,
-		},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		if a, err := time.Parse(time.RFC822, args[0].AsString()); err == nil {
-			return cty.StringVal(fmt.Sprintf("%d", a.Unix())), nil
-		}
-		return cty.StringVal("0"), fmt.Errorf("couldn't find time parser")
-	},
-})
-
-var NowStr = function.New(&function.Spec{
-	Params: []function.Parameter{},
-	Type:   function.StaticReturnType(cty.Number),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		return cty.NumberIntVal(time.Now().Unix()), nil
-	},
-})
-
-var FileStr = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name:             "filename",
-			Type:             cty.String,
-			AllowDynamicType: true,
-			AllowMarked:      true,
-		},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// trim leading dots and slashes so we can't do some bad things.
-		filepath := filepath.Join(_cfgFileLoadPath, strings.TrimLeft(args[0].AsString(), `.`+string(filepath.Separator)))
-		f, err := os.Open(filepath)
-		if err != nil {
-			log.Fatal("file bin open err:", err)
-		}
-		defer f.Close()
-		b, err := ioutil.ReadAll(f)
-		if err != nil {
-			log.Fatal("file bin read err:", err)
-		}
-
-		return cty.StringVal(string(b)), nil
-	},
-})
 
 // a subset of functions used in terraform
 // that can be used when simplifying during conversion

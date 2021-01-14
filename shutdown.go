@@ -1,17 +1,16 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
-func _signal(config *Config) chan struct{} {
+func _shutdown(config Config) chan struct{} {
 	shutdown := make(chan struct{}, 1)
+
 	go func() {
 		signalChan := make(chan os.Signal, 1)
-
 		signal.Notify(
 			signalChan,
 			syscall.SIGHUP,  // kill -SIGHUP XXXX
@@ -20,8 +19,9 @@ func _signal(config *Config) chan struct{} {
 		)
 
 		<-signalChan
-		log.Println("shutting down... (gracefully)")
+		log.Println("\n-----\nshutting down... (gracefully)\n-----")
 		close(shutdown)
 	}()
+
 	return shutdown
 }

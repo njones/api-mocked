@@ -1,66 +1,59 @@
 package main
 
 import (
-	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 )
+
+type serviceControl struct {
+	reload, shutdown chan struct{}
+}
+
+func (sc serviceControl) reloadDrain(shutdown chan struct{}) {
+	for {
+		select {
+		case <-sc.reload: // there are mutiple reloads in quick sucession that need to be captured
+		case <-shutdown:
+			return
+		}
+	}
+}
 
 // Config holds all of the configuration options of the MockServer
 type Config struct {
 	internal struct {
-		fileLoadPath string
+		file string
 
-		serverStart      time.Time
-		serverConfigLoad time.Time
+		svrStart        time.Time
+		svrCfgLoad      time.Time
+		svrCfgLoadValid bool // says if the last reload was successful
 	}
+	serviceControl
 
-	System *struct {
-		RunName   *string `hcl:"run_name"` // the name of the backup running config to use
-		ErrorsDir *string `hcl:"dir"`      // the name of the directory to save issues to
-	} `hcl:"system,block"`
+	Version string `hcl:"version,optional"`
 
-	Version      string         `hcl:"version,optional"`
-	Server       []serverConfig `hcl:"server,block"`
-	PubNubConfig []pubnubConfig `hcl:"pubnub,block"`
-	Routes       []route        `hcl:"path,block"`
-	Websockets   []websocket    `hcl:"websocket,block"`
-	NotFound     *struct {
+	System  *system        `hcl:"system,block"`
+	Servers []serverConfig `hcl:"server,block"`
+
+	Routes     []route     `hcl:"path,block"`
+	Websockets []websocket `hcl:"websocket,block"`
+
+	NotFound *struct {
 		Response response `hcl:"response,block"`
 	} `hcl:"notfound,block"`
 	MethodNotAllowed *struct {
 		Response response `hcl:"response,block"`
 	} `hcl:"methodnotallowed,block"`
-
-	reload, shutdown chan struct{}
-
-	done loading
 }
 
-type loading struct {
-	loadPubNubConfig chan *pnClient
+type system struct {
+	LogDir *string `hcl:"log_dir"` // the name of the directory to save reload logs to
 }
 
 type headers struct {
 	Data map[string][]string `hcl:",remain"`
-}
-
-func (h *headers) Keys() ([]string, int) {
-	var keys []string
-	var varKeys int
-
-	if h == nil {
-		return nil, 0
-	}
-
-	for k := range h.Data {
-		keys = append(keys, k)
-		if strings.HasPrefix(k, "var.") {
-			varKeys++
-		}
-	}
-	return keys, varKeys
 }
 
 type corsBlock struct {
@@ -71,54 +64,38 @@ type corsBlock struct {
 	AllowCredentials *bool    `hcl:"Allow_Credentials"`
 }
 
-type jwtReqBlock struct {
-	Name  string `hcl:"name,label"`
-	Input string `hcl:"input,label"`
-	Key   string `hcl:"key,label"`
-
-	Validate bool   `hcl:"validate,optional"`
-	Prefix   string `hcl:"prefix,optional"`
+// server config options
+type serverConfig struct {
+	Name      string     `hcl:"name,label"`
+	Host      string     `hcl:"host,optional"`
+	HTTP2     bool       `hcl:"http2_only,optional"`
+	BasicAuth *baConfig  `hcl:"basic_auth,block"`
+	PubNub    *pnConfig  `hcl:"pubnub,block"`
+	SocketIO  *sioConfig `hcl:"socketio,block"`
+	JWT       *jwtConfig `hcl:"jwt,block"`
+	SSL       *sslConfig `hcl:"ssl,block"`
 }
 
-type jwtRespBlock struct {
-	Name   string `hcl:"name,label"`
-	Output string `hcl:"output,label"`
-	Key    string `hcl:"key,label"`
-
-	Issuers    *hcl.Attribute    `hcl:"iss"`
-	Subject    *hcl.Attribute    `hcl:"sub"`
-	Audience   *hcl.Attribute    `hcl:"aud"`
-	Expiration *hcl.Attribute    `hcl:"exp"`
-	NotBefore  *hcl.Attribute    `hcl:"nbf"`
-	IssuedAt   *hcl.Attribute    `hcl:"iat"`
-	JWTID      *hcl.Attribute    `hcl:"jti"`
-	Roles      []string          `hcl:"roles,optional"`
-	AuthType   []string          `hcl:"auth_type,optional"`
-	Payload    map[string]string `hcl:",remain"`
-}
-
+// basic auth config options
 type baConfig struct {
 	User string `hcl:"username,optional"`
 	Pass string `hcl:"password,optional"`
 }
 
-type serverConfig struct {
-	Name      string     `hcl:"name,label"`
-	Host      string     `hcl:"host,optional"`
-	HTTP2     bool       `hcl:"http2_only,optional"`
-	SSL       *sslConfig `hcl:"ssl,block"`
-	JWT       *jwtConfig `hcl:"jwt,block"`
-	BasicAuth *baConfig  `hcl:"basic_auth,block"`
+type pnConfig struct {
+	Name         string         `hcl:"name,label"`
+	PublishKey   *hcl.Attribute `hcl:"publish_key"`
+	SubscribeKey *hcl.Attribute `hcl:"subscribe_key"`
+	Channel      string         `hcl:"channel,optional"`
+	UUID         string         `hcl:"uuid,optional"`
 }
 
-type sslConfig struct {
-	CACrt   string   `hcl:"ca_cert,optional"`
-	CAKey   string   `hcl:"ca_key,optional"`
-	Crt     string   `hcl:"cert,optional"`
-	Key     string   `hcl:"key,optional"`
-	LetsEnc []string `hcl:"lets_encrypt,optional"`
+type sioConfig struct {
+	Name string `hcl:"name,label"`
+	UUID string `hcl:"id,optional"`
 }
 
+// JWT config options
 type jwtConfig struct {
 	Name   string         `hcl:"name,label"`
 	Alg    string         `hcl:"algo"`
@@ -127,24 +104,28 @@ type jwtConfig struct {
 	Secret string         `hcl:"secret,optional"`
 }
 
-type pubnubConfig struct {
-	Name         string         `hcl:"name,label"`
-	PublishKey   *hcl.Attribute `hcl:"publish_key"`
-	SubscribeKey *hcl.Attribute `hcl:"subscribe_key"`
-	Channel      string         `hcl:"channel,optional"`
-	UUID         string         `hcl:"uuid,optional"`
+// SSL config options
+type sslConfig struct {
+	CACrt   string   `hcl:"ca_cert,optional"`
+	CAKey   string   `hcl:"ca_key,optional"`
+	Crt     string   `hcl:"cert,optional"`
+	Key     string   `hcl:"key,optional"`
+	LetsEnc []string `hcl:"lets_encrypt,optional"`
 }
 
 type route struct {
-	Path     string     `hcl:"path,label"`
-	Desc     string     `hcl:"_-,optional"`
-	CORS     *corsBlock `hcl:"cors,block"`
+	Path string     `hcl:"path,label"`
+	Desc string     `hcl:"_-,optional"`
+	CORS *corsBlock `hcl:"cors,block"`
+
 	Request  []request  `hcl:"request,block"`
 	SocketIO []socketio `hcl:"socketio,block"`
+	PubNub   []pubnub   `hcl:"pubnub,block"`
 }
 
 type websocket struct {
-	PubNub []pubnub `hcl:"pubnub,block"`
+	PubNub   []pubnub   `hcl:"pubnub,block"`
+	SocketIO []socketio `hcl:"socketio,block"`
 }
 
 type request struct {
@@ -161,19 +142,47 @@ type request struct {
 	Order string `hcl:"order,optional"`
 	Delay string `hcl:"delay,optional"`
 
-	JWT      *jwtReqBlock `hcl:"jwt,block"`
-	Headers  *headers     `hcl:"header,block"`
-	Response []response   `hcl:"response,block"`
-	SocketIO []socketio   `hcl:"socketio,block"`
-	PubNub   []pubnub     `hcl:"pubnub,block"`
+	JWT      *jwtRequest `hcl:"jwt,block"`
+	Headers  *headers    `hcl:"header,block"`
+	Response []response  `hcl:"response,block"`
+	SocketIO []socketio  `hcl:"socketio,block"`
+	PubNub   []pubnub    `hcl:"pubnub,block"`
 }
 
 type response struct {
 	Status  string         `hcl:"status,label"`
 	Headers *headers       `hcl:"header,block"`
 	Body    *hcl.Attribute `hcl:"body"`
-	JWT     *jwtRespBlock  `hcl:"jwt,block"`
+	JWT     *jwtResponse   `hcl:"jwt,block"`
 	PubKey  *string        `hcl:"hpkp"`
+}
+
+type jwtRequest struct {
+	Name  string `hcl:"name,label"`
+	Input string `hcl:"input,label"`
+	Key   string `hcl:"key,label"`
+
+	Validate bool   `hcl:"validate,optional"`
+	Prefix   string `hcl:"prefix,optional"`
+}
+
+type jwtResponse struct {
+	Name   string `hcl:"name,label"`
+	Output string `hcl:"output,label"`
+	Key    string `hcl:"key,label"`
+
+	Subject    *hcl.Attribute    `hcl:"sub" json:"sub"`
+	Issuers    *hcl.Attribute    `hcl:"iss" json:"iss"`
+	Audience   *hcl.Attribute    `hcl:"aud" json:"aud"`
+	Expiration *hcl.Attribute    `hcl:"exp" json:"exp"`
+	NotBefore  *hcl.Attribute    `hcl:"nbf" json:"nbf"`
+	IssuedAt   *hcl.Attribute    `hcl:"iat" json:"iat"`
+	JWTID      *hcl.Attribute    `hcl:"jti" json:"jti"`
+	Roles      []string          `hcl:"roles,optional" json:"roles,optional"`
+	AuthType   []string          `hcl:"auth_type,optional" json:"auth_type,optional"`
+	Payload    map[string]string `hcl:",remain"`
+
+	_hclVarMap map[string]map[string]cty.Value
 }
 
 type pnBroadcast struct {
@@ -204,6 +213,7 @@ type pubnub struct {
 }
 
 type socketio struct {
+	Name  string `hcl:"name,label"`
 	Event string `hcl:"event,label"`
 	Desc  string `hcl:"_-,optional"`
 
