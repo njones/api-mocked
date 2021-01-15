@@ -107,17 +107,18 @@ func _http(config *Config) chan struct{} {
 	if !config.internal.svrCfgLoadValid {
 		mw.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Add("x-reload-error", "--------------------------------")
-				w.Header().Add("x-reload-error", "-- There is an issue with the --")
-				w.Header().Add("x-reload-error", "-- current config file it was --")
-				w.Header().Add("x-reload-error", "-- not reloaded properly,     --")
-				w.Header().Add("x-reload-error", "-- please check the URL below --")
-				w.Header().Add("x-reload-error", "-- localhost:8080             --")
-				w.Header().Add("x-reload-error", "--------------------------------")
+				scheme := "http://"
+				if r.TLS != nil {
+					scheme = "https://"
+				}
+				reloadErrorHeaders(config, w.Header().Add, scheme+r.Host)
 				next.ServeHTTP(w, r)
 			})
 		})
 	}
+
+	// show errors
+	ro.Get("/_internal/reload/errors", reloadErrorHandler(config))
 
 	// channels used for stopping all of the running servers
 	var stoppers = make([]chan struct{}, len(config.Servers))

@@ -45,9 +45,10 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 		LogDir: &logDir,
 	}
 
+	// save any panics so we can recover from them
 	defer func() {
 		if r := recover(); r != nil {
-			saveReloadError(config, fmt.Errorf("%s", string(debug.Stack())))
+			reloadErrorSave(config, fmt.Errorf("%s", string(debug.Stack())), "panic")
 		}
 	}()
 
@@ -59,23 +60,23 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 	config.reload = _reload(config)
 	config.shutdown = _shutdown(config)
 
-	cs := &cleanReloadSlices{}
+	mgr := new(reloadSliceManager)
 	for {
 		// reset all of these slices because the decode will
 		// have problems if on a reload they are already
 		// filled in and not the same size
-		config.Servers, config.Routes, config.Websockets = cs.nil() // send back nil, so these are clean to decode into
+		config.Servers, config.Routes, config.Websockets = mgr.nil() // send back nil, so these are clean to decode into
 
 		log.Printf("[server] loading the config file: %s ...", config.internal.file)
 		if err := hclsimple.DecodeFile(config.internal.file, _context(), &config); err != nil {
-			if !cs.isReload() {
+			if !mgr.isReload() {
 				log.Fatalf("cannot start server(s): %v", err)
 			}
-			saveReloadError(config, err)
+			reloadErrorSave(config, err, "reload")
 			config.internal.svrCfgLoadValid = false
-			config.Servers, config.Routes, config.Websockets = cs.get() // add the old copy back
+			config.Servers, config.Routes, config.Websockets = mgr.get() // add the old copy back
 		}
-		cs.del() // remove old copy
+		mgr.del() // remove old copy
 
 		// run all of the servers (usually HTTP(s))
 		shutdown := _http(&config)
@@ -88,7 +89,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 			config.internal.svrCfgLoadValid = true
 			log.Println("[server] reloading ...")
 
-			cs.put(config.Servers, config.Routes, config.Websockets) // save a copy
+			mgr.put(config.Servers, config.Routes, config.Websockets) // save a copy
 		case <-shutdown:
 			return "Done"
 		}
