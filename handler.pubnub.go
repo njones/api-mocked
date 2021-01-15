@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -184,13 +185,14 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 		return nil, false
 	}
 
-	var idx uint64
-	resps := r.PubNub
+	var idx = int64(-1)
+	var resps = req.PubNub
+	if req.Order == "unordered" {
+		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() { next.ServeHTTP(w, r) }()
-
-			atomic.AddUint64(&idx, 1)
 
 			timeoutTimer := time.NewTimer(1 * time.Minute) // HARDCODED FOR NOW
 			timeout := timeoutTimer.C
@@ -198,7 +200,19 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 				defer timeoutTimer.Stop()
 
 				for {
-					resp := resps[int(idx)%len(resps)]
+					var x int64
+					switch req.Order {
+					case "random":
+						x = rand.Int63n(int64(len(resps) * 2))
+					case "unordered":
+						x = atomic.AddInt64(&idx, 1)
+						if int(x)%len(resps) == 0 {
+							rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
+						}
+					default:
+						x = atomic.AddInt64(&idx, 1)
+					}
+					resp := resps[int(x)%len(resps)]
 					conn, ok := p.client.conn[resp.Name]
 					if !ok {
 						return

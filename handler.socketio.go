@@ -3,6 +3,7 @@
 package main
 
 import (
+	"math/rand"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -81,17 +82,31 @@ func (p *socketioPlugin) Serve(r route, req request) (func(http.Handler) http.Ha
 		return nil, false
 	}
 
-	var idx uint64
-	resps := r.SocketIO
+	var idx = int64(-1)
+	var resps = req.SocketIO
+	if req.Order == "unordered" {
+		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() { next.ServeHTTP(w, r) }()
 
-			atomic.AddUint64(&idx, 1)
-
 			go func() {
 				for {
-					resp := resps[int(idx)%len(resps)]
+					var x int64
+					switch req.Order {
+					case "random":
+						x = rand.Int63n(int64(len(resps) * 2))
+					case "unordered":
+						x = atomic.AddInt64(&idx, 1)
+						if int(x)%len(resps) == 0 {
+							rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
+						}
+					default:
+						x = atomic.AddInt64(&idx, 1)
+					}
+
+					resp := resps[int(x)%len(resps)]
 					log.Println("[socketio] sending event ...")
 
 					if len(req.Delay) > 0 {

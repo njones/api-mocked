@@ -17,18 +17,25 @@ import (
 )
 
 func httpHandler(req request) http.HandlerFunc {
-	var idx uint64
+	var idx = int64(-1)
 	var resps = req.Response
+	if req.Order == "unordered" {
+		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
+	}
 	return WriteError(func(w http.ResponseWriter, r *http.Request) error {
+		var x int64
 		switch req.Order {
 		case "random":
-			idx = rand.Uint64()
+			x = rand.Int63n(int64(len(resps) * 2))
 		case "unordered":
-			// TODO(njones): figure this out...
-		default: // "ordered"
-			atomic.AddUint64(&idx, 1)
+			x = atomic.AddInt64(&idx, 1)
+			if int(x)%len(resps) == 0 {
+				rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
+			}
+		default:
+			x = atomic.AddInt64(&idx, 1)
 		}
-		resp := resps[int(idx)%len(resps)]
+		resp := resps[int(x)%len(resps)]
 
 		if len(req.Delay) > 0 {
 			time.Sleep(delay(req.Delay))
