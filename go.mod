@@ -15,5 +15,6 @@ require (
 	github.com/njones/logger v1.0.8
 	github.com/pubnub/go v4.10.0+incompatible
 	github.com/rs/xid v1.2.1
+	github.com/spf13/afero v1.5.1
 	github.com/zclconf/go-cty v1.2.0
 )

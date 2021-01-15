@@ -3,12 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"time"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
 	"github.com/njones/logger"
+	"github.com/spf13/afero"
 )
 
 var _cfgFileLoadPath string
@@ -38,6 +40,7 @@ type RunOptions func(*Config)
 func run(configFile string, logDir string, opts ...RunOptions) string {
 	var config Config
 
+	config.internal.os = afero.NewOsFs()
 	config.internal.file = configFile
 	config.internal.svrStart = time.Now()
 	config.internal.svrCfgLoadValid = true // this is only false if the reload fails...
@@ -45,16 +48,26 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 		LogDir: &logDir,
 	}
 
-	// save any panics so we can recover from them
-	defer func() {
-		if r := recover(); r != nil {
-			reloadErrorSave(config, fmt.Errorf("%s", string(debug.Stack())), "panic")
-		}
-	}()
-
 	log.Println("[server] applying startup options ...")
 	for _, opt := range opts {
 		opt(&config)
+	}
+
+	re := reloadError{os: config.internal.os}
+	// save any panics so we can recover from them
+	defer func() {
+		if r := recover(); r != nil {
+			re.save(config, fmt.Errorf("%s", string(debug.Stack())), "panic")
+			log.Fatal(r)
+		}
+	}()
+
+	if config.System != nil && config.System.LogDir != nil {
+		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
+			log.Fatal("[server] the log dir: %v does not exist", *config.System.LogDir)
+		}
+	} else {
+		log.Println("[server] SKIPPING logging of reload and panic errors")
 	}
 
 	config.reload = _reload(config)
@@ -72,7 +85,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 			if !mgr.isReload() {
 				log.Fatalf("cannot start server(s): %v", err)
 			}
-			reloadErrorSave(config, err, "reload")
+			re.save(config, err, "reload")
 			config.internal.svrCfgLoadValid = false
 			config.Servers, config.Routes, config.Websockets = mgr.get() // add the old copy back
 		}

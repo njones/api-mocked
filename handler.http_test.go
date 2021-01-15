@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -333,10 +334,11 @@ func TestRequestHandler_JWT(t *testing.T) {
 		},
 	}
 
+	secret := []byte("my_secret_key")
 	// Declare the token with the algorithm used for signing, and the claims
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	// Create the JWT string
-	tokenString, err := token.SignedString([]byte("my_secret_key"))
+	tokenString, err := token.SignedString(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,9 +355,11 @@ func TestRequestHandler_JWT(t *testing.T) {
 				req.Header.Set("Authorization", "bearer "+tokenString)
 			}
 
+			ctx := context.WithValue(req.Context(), sigCtxKey, secret)
+
 			rec := httptest.NewRecorder()
 			hdl := httpHandler(test.req)
-			hdl.ServeHTTP(rec, req)
+			hdl.ServeHTTP(rec, req.WithContext(ctx))
 
 			if rec.Code != test.want.statusCode {
 				t.Errorf("have: %d want: %d", rec.Code, test.want.statusCode)

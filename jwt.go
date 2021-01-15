@@ -48,7 +48,11 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 	var sigKey interface{}
 	switch strings.ToLower(server.JWT.Alg)[:2] {
 	case "hs":
-		sigKey = []byte(server.JWT.Secret)
+		if val, dia := server.JWT.Secret.Expr.Value(&fileEvalCtx); !dia.HasErrors() {
+			sigKey = []byte(val.AsString())
+		} else {
+			panic(fmt.Errorf("[jwt] getting HS secret: %v", dia))
+		}
 	case "rs":
 		if val, dia := server.JWT.Key.Expr.Value(&bodyEvalCtx); !dia.HasErrors() {
 			signKey, err := jwtgo.ParseRSAPrivateKeyFromPEM([]byte(val.AsString()))
@@ -56,16 +60,19 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 				ErrEncodeJWTResponse.F(err)
 			}
 			sigKey = signKey
+		} else {
+			panic(fmt.Errorf("[jwt] getting RS key: %v", dia))
 		}
 	case "es":
 	case "ps":
 	case "ed":
 	}
 
-	log.Printf("[jwt] %q middleware added ...", server.Name)
+	log.Printf("[jwt] %q middleware added (%p) ...", server.Name, mw)
 	mw.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), ctxKey(server.JWT.Name), server.JWT)
+			ctx := r.Context()
+			ctx = context.WithValue(ctx, ctxKey(server.JWT.Name), server.JWT)
 			ctx = context.WithValue(ctx, sigCtxKey, sigKey)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -197,7 +204,7 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 				b = append(b, ","...)
 			}
 			name := val.Type().Field(i).Tag.Get("json")
-			val, _ := a.Expr.Value(jwtEvalCtx(r._hclVarMap))
+			val, _ := a.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 			b = append(b, fmt.Sprintf("%q:", name)...)
 			switch vt := val.Type(); vt {
 			case cty.String:
@@ -244,7 +251,7 @@ func (r *jwtResponse) Valid() error {
 	// The claims below are optional, by default, so if they are set to the
 	// default value in Go, let's not fail the verification for them.
 	if r.VerifyExpiresAt(now, false) == false {
-		num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r._hclVarMap))
+		num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 		expiresAt, _ := num.AsBigFloat().Int64()
 		delta := time.Unix(now, 0).Sub(time.Unix(expiresAt, 0))
 		vErr.Inner = fmt.Errorf("token is expired by %v", delta)
@@ -278,7 +285,7 @@ func (r *jwtResponse) VerifyAudience(cmp string, req bool) bool {
 // Compares the exp claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyExpiresAt(cmp int64, req bool) bool {
-	num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r._hclVarMap))
+	num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	exp, _ := num.AsBigFloat().Int64()
 	return verifyExp(exp, cmp, req)
 }
@@ -286,7 +293,7 @@ func (r *jwtResponse) VerifyExpiresAt(cmp int64, req bool) bool {
 // Compares the iat claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyIssuedAt(cmp int64, req bool) bool {
-	num, _ := r.IssuedAt.Expr.Value(jwtEvalCtx(r._hclVarMap))
+	num, _ := r.IssuedAt.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	iat, _ := num.AsBigFloat().Int64()
 	return verifyIat(iat, cmp, req)
 }
@@ -301,7 +308,7 @@ func (r *jwtResponse) VerifyIssuer(cmp string, req bool) bool {
 // Compares the nbf claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyNotBefore(cmp int64, req bool) bool {
-	num, _ := r.NotBefore.Expr.Value(jwtEvalCtx(r._hclVarMap))
+	num, _ := r.NotBefore.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	nbf, _ := num.AsBigFloat().Int64()
 	return verifyNbf(nbf, cmp, req)
 }

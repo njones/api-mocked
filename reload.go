@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/afero"
 )
 
 func _reload(config Config) chan struct{} {
@@ -79,9 +80,17 @@ func (rs *reloadSliceManager) nil() ([]serverConfig, []route, []websocket) {
 	return []serverConfig(nil), []route(nil), []websocket(nil)
 }
 
+type reloadError struct {
+	os afero.Fs
+}
+
 // reloadErrorSave make sure this only fires once for a specific error
-func reloadErrorSave(config Config, save error, kind string) {
-	f, err := os.Create(filepath.Join(*config.System.LogDir, fmt.Sprintf("%d-%s.txt", time.Now().Unix(), kind)))
+func (re reloadError) save(config Config, save error, kind string) {
+	if config.System == nil || config.System.LogDir == nil {
+		return // skip logging...
+	}
+
+	f, err := re.os.Create(filepath.Join(*config.System.LogDir, fmt.Sprintf("%d-%s.txt", time.Now().Unix(), kind)))
 	if err != nil {
 		log.Fatal(fmt.Errorf("cannot open file to save error: %v", err))
 	}
@@ -89,21 +98,21 @@ func reloadErrorSave(config Config, save error, kind string) {
 	fmt.Fprintf(f, reloadErrorSaveOut, time.Now().Format(time.RFC1123Z), kind, save)
 }
 
-func zeroOrGreater(i int) int {
+func (re reloadError) zeroOrGreater(i int) int {
 	if i < 0 {
 		return 0
 	}
 	return i
 }
 
-func (c Config) hln(delim string, length int, format string, v ...interface{}) string {
+func (re reloadError) hln(delim string, length int, format string, v ...interface{}) string {
 	txt := fmt.Sprintf(format, v...)
 
-	return fmt.Sprintf("%s%[1]s %s %s %[1]s%[1]s", delim, txt, strings.Repeat(" ", zeroOrGreater(length-len(txt)-7)))
+	return fmt.Sprintf("%s%[1]s %s %s %[1]s%[1]s", delim, txt, strings.Repeat(" ", re.zeroOrGreater(length-len(txt)-7)))
 }
 
 // ww does word wrapping, and sends back sentences in slices
-func (c Config) ww(txt string, length int) (rtn []string) {
+func (re reloadError) ww(txt string, length int) (rtn []string) {
 	runes := []rune(strings.TrimSpace(txt)) // the code chants: "we want runes, we want runes, we want..."
 	if len(runes) <= length {
 		return []string{txt}
@@ -127,22 +136,22 @@ func (c Config) ww(txt string, length int) (rtn []string) {
 	return append(rtn, string(runes))
 }
 
-func reloadErrorHeaders(config *Config, fn func(string, string), hostname string) {
+func (re reloadError) headers(config *Config, fn func(string, string), hostname string) {
 	var delim, bar, x = "-", "=", 60
 	fn("x-reload-error", strings.Repeat(delim, x))
-	fn("x-reload-error", config.hln(delim, x, "[server] started on: %s", config.internal.svrStart.Format(time.RFC1123)))
-	fn("x-reload-error", config.hln(delim, x, "[server] reloaded on: %s", config.internal.svrCfgLoad.Format(time.RFC1123)))
-	fn("x-reload-error", config.hln(delim, x, "[server] uptime: %s", time.Since(config.internal.svrStart)))
-	fn("x-reload-error", config.hln(delim, x, strings.Repeat(bar, x-7)))
-	lines := config.ww("The server configuration has not been applied after the most recent update due to an error, please check the configuration and try the reload again.", x-7)
+	fn("x-reload-error", re.hln(delim, x, "[server] started on: %s", config.internal.svrStart.Format(time.RFC1123)))
+	fn("x-reload-error", re.hln(delim, x, "[server] reloaded on: %s", config.internal.svrCfgLoad.Format(time.RFC1123)))
+	fn("x-reload-error", re.hln(delim, x, "[server] uptime: %s", time.Since(config.internal.svrStart)))
+	fn("x-reload-error", re.hln(delim, x, strings.Repeat(bar, x-7)))
+	lines := re.ww("The server configuration has not been applied after the most recent update due to an error, please check the configuration and try the reload again.", x-7)
 	for _, line := range lines {
-		fn("x-reload-error", config.hln(delim, x, line))
+		fn("x-reload-error", re.hln(delim, x, line))
 	}
 	fn("x-reload-error", strings.Repeat(delim, x))
 	fn("x-reload-error", fmt.Sprintf("for errors see: %s/_internal/reload/errors", hostname))
 }
 
-func reloadErrorHandler(config *Config) http.HandlerFunc {
+func (re reloadError) handler(config *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if config.System == nil || config.System.LogDir == nil {
 			fmt.Fprintf(w, "no log directory set")
@@ -151,8 +160,10 @@ func reloadErrorHandler(config *Config) http.HandlerFunc {
 
 		// TODO(njones): sanitize the logDir path
 		var files []string
-		filepath.Walk(*config.System.LogDir, func(path string, info os.FileInfo, err error) error {
-			files = append(files, path) // just save the file path, because we're gonna sort them...
+		afero.Walk(re.os, *config.System.LogDir, func(path string, info os.FileInfo, err error) error {
+			if strings.HasSuffix(path, "-reload.txt") || strings.HasSuffix(path, "-panix.txt") {
+				files = append(files, path) // just save the file path, because we're gonna sort them...
+			}
 			return nil
 		})
 
@@ -160,7 +171,7 @@ func reloadErrorHandler(config *Config) http.HandlerFunc {
 		sort.Sort(sort.Reverse(sort.StringSlice(files)))
 
 		for _, file := range files {
-			f, err := os.Open(file)
+			f, err := re.os.Open(file)
 			if err != nil {
 				fmt.Fprintf(w, "error walking output log files: %v\n", err)
 				return

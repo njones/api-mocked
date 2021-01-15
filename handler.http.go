@@ -142,11 +142,11 @@ func httpHandler(req request) http.HandlerFunc {
 				for k, vals := range qys {
 					var idxMap = make(map[string]cty.Value)
 					for i, val := range vals {
-						var key = strconv.Itoa(i)
+						var iKey = strconv.Itoa(i)
 						if i == 0 {
-							key = "val"
+							iKey = "val"
 						}
-						idxMap[key] = cty.StringVal(val)
+						idxMap[iKey] = cty.StringVal(val)
 					}
 					resp.JWT._hclVarMap["queryparam"][k] = cty.ObjectVal(idxMap)
 				}

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/spf13/afero"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -24,6 +25,7 @@ func (sc serviceControl) reloadDrain(shutdown chan struct{}) {
 // Config holds all of the configuration options of the MockServer
 type Config struct {
 	internal struct {
+		os   afero.Fs
 		file string
 
 		svrStart        time.Time
@@ -100,8 +102,8 @@ type jwtConfig struct {
 	Name   string         `hcl:"name,label"`
 	Alg    string         `hcl:"algo"`
 	Typ    *string        `hcl:"typ"`
-	Key    *hcl.Attribute `hcl:"private_key,optional"`
-	Secret string         `hcl:"secret,optional"`
+	Key    *hcl.Attribute `hcl:"private_key"`
+	Secret *hcl.Attribute `hcl:"secret"`
 }
 
 // SSL config options

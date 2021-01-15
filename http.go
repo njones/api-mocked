@@ -102,6 +102,8 @@ func _http(config *Config) chan struct{} {
 		})
 	}
 
+	re := reloadError{} // setup error handling on reload
+
 	// check to see if we should send back headers
 	// saying that the reload failed
 	if !config.internal.svrCfgLoadValid {
@@ -111,14 +113,14 @@ func _http(config *Config) chan struct{} {
 				if r.TLS != nil {
 					scheme = "https://"
 				}
-				reloadErrorHeaders(config, w.Header().Add, scheme+r.Host)
+				re.headers(config, w.Header().Add, scheme+r.Host)
 				next.ServeHTTP(w, r)
 			})
 		})
 	}
 
 	// show errors
-	ro.Get("/_internal/reload/errors", reloadErrorHandler(config))
+	ro.Get("/_internal/reload/errors", re.handler(config))
 
 	// channels used for stopping all of the running servers
 	var stoppers = make([]chan struct{}, len(config.Servers))
@@ -131,10 +133,10 @@ func _http(config *Config) chan struct{} {
 	svr.Add(len(config.Servers))
 
 	for i, server := range config.Servers {
-		tlsConfig := useTLS(mw, server) // Getting our TLS status for each server
-		useJWT(mw, server)
-
 		r := chi.NewRouter() // a place where we can combine middleware and routes
+
+		tlsConfig := useTLS(r, server) // Getting our TLS status for each server
+		useJWT(r, server)
 
 		// check if we should limit this server to only HTTP2 requests
 		if server.HTTP2 {

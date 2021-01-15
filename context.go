@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -69,23 +70,23 @@ func _context() *hcl.EvalContext {
 var fileEvalCtx = hcl.EvalContext{
 	Variables: map[string]cty.Value{},
 	Functions: map[string]function.Function{
-		"file": FileToStr,
+		"file": FileToStr("file", "ctx"),
 	},
 }
 
 var bodyEvalCtx = hcl.EvalContext{
 	Variables: map[string]cty.Value{},
 	Functions: map[string]function.Function{
-		"file": FileToStr,
+		"file": FileToStr("body", "ctx"),
 	},
 }
 
-func jwtEvalCtx(vars map[string]map[string]cty.Value) *hcl.EvalContext {
+func jwtEvalCtx(name, key string, vars map[string]map[string]cty.Value) *hcl.EvalContext {
 	var ctx = &hcl.EvalContext{
 		Variables: map[string]cty.Value{},
 		Functions: map[string]function.Function{
 			"now":      NowToStr,
-			"file":     FileToStr,
+			"file":     FileToStr(name, key),
 			"unix":     UnixTsToStr,
 			"duration": DurToStr,
 		},
@@ -116,32 +117,39 @@ var DurToStr = function.New(&function.Spec{
 	},
 })
 
-var FileToStr = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name:             "filename",
-			Type:             cty.String,
-			AllowDynamicType: true,
-			AllowMarked:      true,
-		},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// trim leading dots and slashes so we can't do some bad things.
-		filepath := filepath.Join(_cfgFileLoadPath, strings.TrimLeft(args[0].AsString(), `.`+string(filepath.Separator)))
-		f, err := os.Open(filepath)
-		if err != nil {
-			log.Fatal("expr file open:", err)
-		}
-		defer f.Close()
-		b, err := ioutil.ReadAll(f)
-		if err != nil {
-			log.Fatal("expr file read:", err)
-		}
+// fileToStrOpen allows the function to be overridden so we
+// can add our own filesystem to open files, use the name, key
+// to allow parallel tests based on those values.
+var fileToStrOpen = func(_, _, filepath string) (io.ReadCloser, error) { return os.Open(filepath) }
 
-		return cty.StringVal(string(b)), nil
-	},
-})
+func FileToStr(name string, key string) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{
+			{
+				Name:             "filename",
+				Type:             cty.String,
+				AllowDynamicType: true,
+				AllowMarked:      true,
+			},
+		},
+		Type: function.StaticReturnType(cty.String),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			// trim leading dots and slashes so we can't do some bad things.
+			filepath := filepath.Join(_cfgFileLoadPath, strings.TrimLeft(args[0].AsString(), `.`+string(filepath.Separator)))
+			f, err := fileToStrOpen(name, key, filepath)
+			if err != nil {
+				log.Fatal("expr file open:", err)
+			}
+			defer f.Close()
+			b, err := ioutil.ReadAll(f)
+			if err != nil {
+				log.Fatal("expr file read:", err)
+			}
+
+			return cty.StringVal(string(b)), nil
+		},
+	})
+}
 
 var NowToStr = function.New(&function.Spec{
 	Params: []function.Parameter{},
