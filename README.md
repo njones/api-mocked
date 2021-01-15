@@ -14,7 +14,7 @@ API-Mocked is a stand-alone HTTP(s)/Websocket servers for serving known (usually
 
 It can mock HTTP, HTTPS and Websockets, so it can provide wide coverage of how an API can look. It has the following features:
 
-1. Uses HCL for a config format, so it's sasy to use and copy/paste
+1. Uses HCL for a config format, so it's easy to use and copy/paste
 2. Allows websocket connections (via socket.io)
 3. Can use CORS headers
 4. Can use JWTs for auth
