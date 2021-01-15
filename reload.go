@@ -120,8 +120,7 @@ func (c Config) ww(txt string, length int) (rtn []string) {
 			runes = runes[i+1:] // remove the space or newline
 			i = length          // reset the length
 			if len(runes) < i { // and check again
-				rtn = append(rtn, string(runes))
-				return rtn
+				return append(rtn, string(runes))
 			}
 		}
 	}
@@ -153,7 +152,7 @@ func reloadErrorHandler(config *Config) http.HandlerFunc {
 		// TODO(njones): sanitize the logDir path
 		var files []string
 		filepath.Walk(*config.System.LogDir, func(path string, info os.FileInfo, err error) error {
-			files = append(files, path)
+			files = append(files, path) // just save the file path, because we're gonna sort them...
 			return nil
 		})
 
