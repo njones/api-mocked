@@ -80,7 +80,7 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 
 }
 
-func decodeJWT(r *http.Request, reqJWT *jwtRequest) (token *jwtgo.Token, err error) {
+func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (token *jwtgo.Token, err error) {
 	if reqJWT == nil {
 		return token, nil
 	}
@@ -131,9 +131,8 @@ func decodeJWT(r *http.Request, reqJWT *jwtRequest) (token *jwtgo.Token, err err
 			if token.Valid {
 				v = "valid"
 			}
-			r.Header.Set("x-jwt-validation", v)
+			w.Header().Set("x-jwt-validation", v)
 		}
-
 	}
 
 	return token, err

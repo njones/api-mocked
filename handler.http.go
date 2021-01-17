@@ -42,7 +42,7 @@ func httpHandler(req request) http.HandlerFunc {
 		}
 
 		// parse JWT tokens and validate if necessary
-		token, err := decodeJWT(r, req.JWT)
+		token, err := decodeJWT(w, r, req.JWT)
 		if err != nil {
 			return ErrDecodeJWTResponse.F(err)
 		}

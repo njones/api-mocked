@@ -257,6 +257,7 @@ func TestRequestHandler_JWT(t *testing.T) {
 	type wants struct {
 		statusCode int
 		body       string
+		validation string
 	}
 
 	type auth struct {
@@ -268,8 +269,9 @@ func TestRequestHandler_JWT(t *testing.T) {
 		name string
 		auth auth
 
-		req  request
-		want wants
+		req      request
+		validate bool
+		want     wants
 	}{
 		{
 			name: "normal",
@@ -317,6 +319,32 @@ func TestRequestHandler_JWT(t *testing.T) {
 				body:       "Hello, World",
 			},
 		},
+		{
+			name: "auth cookie",
+			auth: auth{
+				kind: "cookie",
+				key:  "session",
+			},
+			req: request{
+				JWT: &jwtRequest{
+					Input:    "cookie",
+					Key:      "session",
+					Validate: true,
+				},
+				Response: []response{
+					{
+						Status: "200",
+						Body:   attr(`Hello, World`),
+					},
+				},
+			},
+			validate: true,
+			want: wants{
+				statusCode: 200,
+				body:       "Hello, World",
+				validation: "valid",
+			},
+		},
 	}
 
 	type Claims struct {
@@ -353,6 +381,12 @@ func TestRequestHandler_JWT(t *testing.T) {
 			switch test.auth.kind {
 			case "header":
 				req.Header.Set("Authorization", "bearer "+tokenString)
+			case "cookie":
+				cookie := http.Cookie{
+					Name:  test.auth.key,
+					Value: tokenString,
+				}
+				req.AddCookie(&cookie)
 			}
 
 			ctx := context.WithValue(req.Context(), sigCtxKey, secret)
@@ -367,6 +401,13 @@ func TestRequestHandler_JWT(t *testing.T) {
 
 			if rec.Body.String() != test.want.body {
 				t.Errorf("\nhave: %q\nwant: %q", rec.Body.String(), test.want.body)
+			}
+
+			if test.validate {
+				have := rec.Header().Get("x-jwt-validation")
+				if have != test.want.validation {
+					t.Errorf("\nhave: %q\nwant: %q", have, test.want.validation)
+				}
 			}
 		})
 	}
