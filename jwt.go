@@ -89,19 +89,19 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (toke
 
 	var jwtStr string
 	switch reqJWT.Input {
-	case "header":
-		jwtStr = r.Header.Get(reqJWT.Key)
+	case "auth":
+		data := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
+		if len(data) == 2 && reqJWT.Key == strings.ToLower(data[0]) {
+			jwtStr = data[1]
+		}
 	case "cookie":
 		cookie, err := r.Cookie(reqJWT.Key)
 		if err != nil {
 			return nil, err
 		}
 		jwtStr = cookie.Value
-	case "auth":
-		data := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
-		if len(data) == 2 && reqJWT.Key == strings.ToLower(data[0]) {
-			jwtStr = data[1]
-		}
+	case "header":
+		jwtStr = r.Header.Get(reqJWT.Key)
 	default:
 		return nil, ErrInvalidJWTLoc.F("input")
 	}
@@ -121,10 +121,15 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (toke
 		})
 
 		if err != nil {
-			return token, err
+			// the following test should follow this logic:
+			// if validate is nil (not set) then return any errors
+			// OR if validate is false then return any errors
+			if reqJWT.Validate == nil || !*reqJWT.Validate {
+				return token, err // this only returns validation errors
+			}
 		}
 
-		if reqJWT.Validate {
+		if reqJWT.Validate != nil && *reqJWT.Validate {
 			log.Println("[jwt] setting validation header ...")
 
 			v := "invalid"

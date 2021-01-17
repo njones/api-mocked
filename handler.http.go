@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"html/template"
 	"math/rand"
@@ -43,7 +44,7 @@ func httpHandler(req request) http.HandlerFunc {
 
 		// parse JWT tokens and validate if necessary
 		token, err := decodeJWT(w, r, req.JWT)
-		if err != nil {
+		if err != nil && !errors.Is(err, jwtgo.ErrSignatureInvalid) {
 			return ErrDecodeJWTResponse.F(err)
 		}
 

@@ -164,7 +164,7 @@ type jwtRequest struct {
 	Input string `hcl:"input,label"`
 	Key   string `hcl:"key,label"`
 
-	Validate bool   `hcl:"validate,optional"`
+	Validate *bool  `hcl:"validate"`
 	Prefix   string `hcl:"prefix,optional"`
 }
 

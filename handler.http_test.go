@@ -254,6 +254,8 @@ func TestRequestHandler_URLParams(t *testing.T) {
 
 func TestRequestHandler_JWT(t *testing.T) {
 
+	var True = true
+
 	type wants struct {
 		statusCode int
 		body       string
@@ -266,22 +268,22 @@ func TestRequestHandler_JWT(t *testing.T) {
 	}
 
 	var tests = []struct {
-		name string
-		auth auth
+		name   string
+		auth   auth
+		secret []byte
 
-		req      request
-		validate bool
-		want     wants
+		req  request
+		want wants
 	}{
 		{
 			name: "normal",
 			auth: auth{
-				kind: "header",
+				kind: "auth",
 				key:  "bearer",
 			},
 			req: request{
 				JWT: &jwtRequest{
-					Input: "header",
+					Input: "auth",
 					Key:   "bearer",
 				},
 				Response: []response{
@@ -299,7 +301,7 @@ func TestRequestHandler_JWT(t *testing.T) {
 		{
 			name: "auth header",
 			auth: auth{
-				kind: "header",
+				kind: "auth",
 				key:  "bearer",
 			},
 			req: request{
@@ -329,7 +331,7 @@ func TestRequestHandler_JWT(t *testing.T) {
 				JWT: &jwtRequest{
 					Input:    "cookie",
 					Key:      "session",
-					Validate: true,
+					Validate: &True,
 				},
 				Response: []response{
 					{
@@ -338,11 +340,36 @@ func TestRequestHandler_JWT(t *testing.T) {
 					},
 				},
 			},
-			validate: true,
 			want: wants{
 				statusCode: 200,
 				body:       "Hello, World",
 				validation: "valid",
+			},
+		},
+		{
+			name: "normal invalid",
+			auth: auth{
+				kind: "auth",
+				key:  "bearer",
+			},
+			req: request{
+				JWT: &jwtRequest{
+					Input:    "auth",
+					Key:      "bearer",
+					Validate: &True,
+				},
+				Response: []response{
+					{
+						Status: "200",
+						Body:   attr(`Hello, World`),
+					},
+				},
+			},
+			secret: []byte("does not compute"),
+			want: wants{
+				statusCode: 500,
+				body:       "Internal server error\n",
+				validation: "invalid",
 			},
 		},
 	}
@@ -379,17 +406,23 @@ func TestRequestHandler_JWT(t *testing.T) {
 			}
 
 			switch test.auth.kind {
-			case "header":
-				req.Header.Set("Authorization", "bearer "+tokenString)
+			case "auth":
+				req.Header.Set("Authorization", test.auth.key+" "+tokenString)
 			case "cookie":
 				cookie := http.Cookie{
 					Name:  test.auth.key,
 					Value: tokenString,
 				}
 				req.AddCookie(&cookie)
+			case "header":
+				req.Header.Set(test.auth.key, tokenString)
 			}
 
-			ctx := context.WithValue(req.Context(), sigCtxKey, secret)
+			var secr3t = test.secret
+			if test.secret == nil {
+				secr3t = secret
+			}
+			ctx := context.WithValue(req.Context(), sigCtxKey, secr3t)
 
 			rec := httptest.NewRecorder()
 			hdl := httpHandler(test.req)
@@ -403,7 +436,7 @@ func TestRequestHandler_JWT(t *testing.T) {
 				t.Errorf("\nhave: %q\nwant: %q", rec.Body.String(), test.want.body)
 			}
 
-			if test.validate {
+			if test.req.JWT.Validate != nil && *test.req.JWT.Validate {
 				have := rec.Header().Get("x-jwt-validation")
 				if have != test.want.validation {
 					t.Errorf("\nhave: %q\nwant: %q", have, test.want.validation)
