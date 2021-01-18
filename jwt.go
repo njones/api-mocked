@@ -64,8 +64,27 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 			panic(fmt.Errorf("[jwt] getting RS key: %v", dia))
 		}
 	case "es":
+		if val, dia := server.JWT.Key.Expr.Value(&bodyEvalCtx); !dia.HasErrors() {
+			signKey, err := jwtgo.ParseECPrivateKeyFromPEM([]byte(val.AsString()))
+			if err != nil {
+				ErrEncodeJWTResponse.F(err)
+			}
+			sigKey = signKey
+		} else {
+			panic(fmt.Errorf("[jwt] getting RS key: %v", dia))
+		}
 	case "ps":
+		if val, dia := server.JWT.Key.Expr.Value(&bodyEvalCtx); !dia.HasErrors() {
+			signKey, err := jwtgo.ParseRSAPrivateKeyFromPEM([]byte(val.AsString()))
+			if err != nil {
+				ErrEncodeJWTResponse.F(err)
+			}
+			sigKey = signKey
+		} else {
+			panic(fmt.Errorf("[jwt] getting RS key: %v", dia))
+		}
 	case "ed":
+		panic("[jwt] using a EdDSA key is unsupported")
 	}
 
 	log.Printf("[jwt] %q middleware added (%p) ...", server.Name, mw)
@@ -137,6 +156,9 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (toke
 				v = "valid"
 			}
 			w.Header().Set("x-jwt-validation", v)
+			if err != nil {
+				err = WarnError{err}
+			}
 		}
 	}
 

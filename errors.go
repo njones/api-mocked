@@ -130,3 +130,5 @@ func (e Ext400Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request)
 	log.Println(e.error)
 	return true
 }
+
+type WarnError struct{ error }

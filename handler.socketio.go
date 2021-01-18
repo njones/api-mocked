@@ -78,7 +78,7 @@ func (p *socketioPlugin) Subscribe(sio socketio) {
 }
 
 func (p *socketioPlugin) Serve(r route, req request) (func(http.Handler) http.Handler, bool) {
-	if len(r.SocketIO) == 0 {
+	if len(req.SocketIO) == 0 {
 		return nil, false
 	}
 
