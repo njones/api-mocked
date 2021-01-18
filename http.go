@@ -23,10 +23,11 @@ type Plugin interface {
 
 func _http(config *Config) chan struct{} {
 	// setup any plugin
-	for _, plugin := range plugins {
+	for name, plugin := range plugins {
 		if err := plugin.Setup(config); err != nil {
 			log.Println("[setup] plugin err: %v", err)
 		}
+		log.Printf("[plugin] setup %v", name)
 	}
 
 	ro := chi.NewRouter() // routes
@@ -102,7 +103,7 @@ func _http(config *Config) chan struct{} {
 		})
 	}
 
-	re := reloadError{} // setup error handling on reload
+	re := reloadError{os: config.internal.os} // setup error handling on reload
 
 	// check to see if we should send back headers
 	// saying that the reload failed
@@ -119,8 +120,9 @@ func _http(config *Config) chan struct{} {
 		})
 	}
 
-	// show errors
+	// show errors and stats
 	ro.Get("/_internal/reload/errors", re.handler(config))
+	ro.Get("/_internal/server/stats", serverStats())
 
 	// channels used for stopping all of the running servers
 	var stoppers = make([]chan struct{}, len(config.Servers))
@@ -198,4 +200,10 @@ func _http(config *Config) chan struct{} {
 		close(shutdown)
 	}()
 	return shutdown
+}
+
+func serverStats() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "addr:", r.Host)
+	}
 }

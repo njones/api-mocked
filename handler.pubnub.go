@@ -181,7 +181,7 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 }
 
 func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Handler, bool) {
-	if len(r.PubNub) == 0 {
+	if len(req.PubNub) == 0 {
 		return nil, false
 	}
 
@@ -190,38 +190,49 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 	if req.Order == "unordered" {
 		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
 	}
+	log.Print("[pubnub] adding http response ...")
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Print("[pubnub] starting http response ...")
 			defer func() { next.ServeHTTP(w, r) }()
 
+			log.Print("[pubnub] allow tick responses for 1m at most ...")
 			timeoutTimer := time.NewTimer(1 * time.Minute) // HARDCODED FOR NOW
 			timeout := timeoutTimer.C
 			go func() {
 				defer timeoutTimer.Stop()
 
+				log.Print("[pubnub] starting tick ...")
 				for {
 					var x int64
 					switch req.Order {
 					case "random":
+						log.Print(`[pubnub] using "random" ...`)
 						x = rand.Int63n(int64(len(resps) * 2))
 					case "unordered":
+						log.Print(`[pubnub] using "unordered" ...`)
 						x = atomic.AddInt64(&idx, 1)
 						if int(x)%len(resps) == 0 {
 							rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
 						}
 					default:
+						log.Print(`[pubnub] using "ordered" ...`)
 						x = atomic.AddInt64(&idx, 1)
 					}
+
+					log.Print(`[pubnub] collecting the response ...`)
 					resp := resps[int(x)%len(resps)]
 					conn, ok := p.client.conn[resp.Name]
 					if !ok {
 						return
 					}
 
+					log.Print(`[pubnub] applying the delay ...`)
 					if len(req.Delay) > 0 {
 						time.Sleep(delay(req.Delay))
 					}
 
+					log.Print(`[pubnub] publishing as socketio ...`)
 					for _, sio := range resp.PublishSocketIO {
 						if sio.Data == nil {
 							continue
@@ -229,7 +240,8 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 						log.Printf("[pubnub] http message %s %s %s ...", resp.Name, sio.Namespace, sio.Event)
 
 						dataVal, err := sio.Data.Expr.Value(&bodyEvalCtx)
-						if log.OnErr(err).Printf("[pubnub] http failed to broadcast: %v", err).HasErr() {
+						if err != nil {
+							log.Printf("[pubnub] http failed to broadcast: %v", err)
 							return
 						}
 
@@ -243,11 +255,14 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 						conn.Publish().Channel(p.client.channel[resp.Name]).Message(msg).Execute()
 					}
 
+					log.Print(`[pubnub] checking ticker (repeat) ...`)
 					if len(timeout) == 0 && req.Ticker != nil && len(req.Ticker.Time) > 0 {
 						time.Sleep(delay(req.Ticker.Time))
+						log.Print(`[pubnub] continue ...`)
 						continue
 					}
 
+					log.Print(`[pubnub] ending http response ...`)
 					break
 				}
 			}()

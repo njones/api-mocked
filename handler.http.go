@@ -17,6 +17,45 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+type responseWriter struct {
+	wrote  bool
+	status int
+	http.ResponseWriter
+}
+
+func (rw *responseWriter) Write(p []byte) (int, error) {
+	rw.wrote = true
+	return rw.ResponseWriter.Write(p)
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	return rw.ResponseWriter.(http.Pusher).Push(target, opts)
+}
+
+func useHTTPResponse(resps []response, idx int64, order string) (response, bool) {
+	if len(resps) == 0 {
+		return response{}, false
+	}
+	var x int64
+	switch order {
+	case "random":
+		x = rand.Int63n(int64(len(resps) * 2))
+	case "unordered":
+		x = atomic.AddInt64(&idx, 1)
+		if int(x)%len(resps) == 0 {
+			rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
+		}
+	default:
+		x = atomic.AddInt64(&idx, 1)
+	}
+	return resps[int(x)%len(resps)], true
+}
+
 func httpHandler(req request) http.HandlerFunc {
 	var idx = int64(-1)
 	var resps = req.Response
@@ -24,19 +63,10 @@ func httpHandler(req request) http.HandlerFunc {
 		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
 	}
 	return WriteError(func(w http.ResponseWriter, r *http.Request) error {
-		var x int64
-		switch req.Order {
-		case "random":
-			x = rand.Int63n(int64(len(resps) * 2))
-		case "unordered":
-			x = atomic.AddInt64(&idx, 1)
-			if int(x)%len(resps) == 0 {
-				rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
-			}
-		default:
-			x = atomic.AddInt64(&idx, 1)
+		resp, hasResp := useHTTPResponse(resps, idx, req.Order)
+		if !hasResp {
+			return Ext404Error{nil}
 		}
-		resp := resps[int(x)%len(resps)]
 
 		if len(req.Delay) > 0 {
 			time.Sleep(delay(req.Delay))
@@ -51,9 +81,9 @@ func httpHandler(req request) http.HandlerFunc {
 		// Add all of the template functions
 		var bodyFuncs template.FuncMap = map[string]interface{}{
 			"Header":     func(s string) string { return r.Header.Get(s) },
-			"UrlParam":   func(s string) string { return chi.URLParam(r, s) },
+			"URLParam":   func(s string) string { return chi.URLParam(r, s) },
 			"QueryParam": func(s string) string { return r.URL.Query().Get(s) },
-			"JwtField": func(s string) string {
+			"JWTField": func(s string) string {
 				if token != nil {
 					if claims, ok := token.Claims.(jwtgo.MapClaims); ok {
 						if value, ok := claims[s]; ok {
