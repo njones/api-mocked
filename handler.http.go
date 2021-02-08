@@ -163,24 +163,40 @@ func httpHandler(req request) http.HandlerFunc {
 			resp.JWT._hclVarMap = make(map[string]map[string]cty.Value)
 			ups := chi.RouteContext(r.Context()).URLParams
 			if len(ups.Keys) > 0 {
-				resp.JWT._hclVarMap["urlparam"] = make(map[string]cty.Value)
+				resp.JWT._hclVarMap["url"] = make(map[string]cty.Value)
 				for i, k := range ups.Keys {
-					resp.JWT._hclVarMap["urlparam"][k] = cty.StringVal(ups.Values[i])
+					resp.JWT._hclVarMap["url"][k] = cty.StringVal(ups.Values[i])
 				}
 			}
 			qys := r.URL.Query()
 			if len(qys) > 0 {
-				resp.JWT._hclVarMap["queryparam"] = make(map[string]cty.Value)
+				resp.JWT._hclVarMap["query"] = make(map[string]cty.Value)
 				for k, vals := range qys {
 					var idxMap = make(map[string]cty.Value)
 					for i, val := range vals {
 						var iKey = strconv.Itoa(i)
 						if i == 0 {
-							iKey = "val"
+							iKey = "0"
 						}
 						idxMap[iKey] = cty.StringVal(val)
 					}
-					resp.JWT._hclVarMap["queryparam"][k] = cty.ObjectVal(idxMap)
+					resp.JWT._hclVarMap["query"][k] = cty.ObjectVal(idxMap)
+				}
+			}
+
+			pstd := r.Form
+			if pstd != nil && len(pstd) > 0 {
+				resp.JWT._hclVarMap["post"] = make(map[string]cty.Value)
+				for k, vals := range pstd {
+					var idxMap = make(map[string]cty.Value)
+					for i, val := range vals {
+						var iKey = strconv.Itoa(i)
+						if i == 0 {
+							iKey = "0"
+						}
+						idxMap[iKey] = cty.StringVal(val)
+					}
+					resp.JWT._hclVarMap["post"][k] = cty.ObjectVal(idxMap)
 				}
 			}
 

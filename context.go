@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -146,7 +147,7 @@ func FileToStr(name string, key string) function.Function {
 				log.Fatal("expr file read:", err)
 			}
 
-			return cty.StringVal(string(b)), nil
+			return cty.StringVal(string(bytes.TrimSpace(b))), nil
 		},
 	})
 }

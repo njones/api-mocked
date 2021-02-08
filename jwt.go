@@ -16,6 +16,7 @@ import (
 	jwtgo "github.com/dgrijalva/jwt-go"
 	"github.com/go-chi/chi"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -87,7 +88,7 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 		panic("[jwt] using a EdDSA key is unsupported")
 	}
 
-	log.Printf("[jwt] %q middleware added (%p) ...", server.Name, mw)
+	log.Printf("[jwt] %q middleware added ...", server.Name)
 	mw.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -216,6 +217,25 @@ func encodeJWT(w http.ResponseWriter, claims *jwtResponse, cfg *jwtConfig, key i
 // Makes sure that the claims are valid ...
 // this is taken from: https://github.com/dgrijalva/jwt-go/blob/dc14462fd58732591c7fa58cc8496d6824316a82/claims.go
 
+func useShortZeroValue(a *hcl.Attribute) {
+	// this will set the index to 0 if a variable is ${post.<value>} ... it will make things right
+	// I tried serveral other ways, but this is the one that worked
+	vars := a.Expr.Variables()
+	for _, v1 := range vars {
+		switch vE := a.Expr.(type) {
+		case *hclsyntax.TemplateWrapExpr:
+			if scope, ok := vE.Wrapped.(*hclsyntax.ScopeTraversalExpr); ok && len(v1) == 2 {
+				if root, ok := scope.Traversal[0].(hcl.TraverseRoot); ok {
+					if root.Name == "post" {
+						k1 := hcl.TraverseIndex{Key: cty.NumberIntVal(0)}
+						a.Expr.(*hclsyntax.TemplateWrapExpr).Wrapped.(*hclsyntax.ScopeTraversalExpr).Traversal = append(a.Expr.(*hclsyntax.TemplateWrapExpr).Wrapped.(*hclsyntax.ScopeTraversalExpr).Traversal, k1)
+					}
+				}
+			}
+		}
+	}
+}
+
 func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 	var addComma bool
 	b = append(b, '{')
@@ -226,6 +246,7 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 			continue
 		}
 		if a, ok := val.Field(i).Interface().(*hcl.Attribute); ok && a != nil {
+			useShortZeroValue(a)
 			if addComma {
 				b = append(b, ","...)
 			}
@@ -241,7 +262,8 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 			case cty.Bool:
 				b = append(b, fmt.Sprintf("%t", val.True())...)
 			default:
-				log.Printf("TYPE: %#v", vt)
+				log.Printf("l: %#v", a.Expr)
+				log.Printf("r.key: %q r.name: %q name: %q type: %#v", r.Key, r.Name, name, vt)
 				b = append(b, `""`...) // just let it be empty
 			}
 			addComma = true
@@ -277,6 +299,7 @@ func (r *jwtResponse) Valid() error {
 	// The claims below are optional, by default, so if they are set to the
 	// default value in Go, let's not fail the verification for them.
 	if r.VerifyExpiresAt(now, false) == false {
+		useShortZeroValue(r.Expiration)
 		num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 		expiresAt, _ := num.AsBigFloat().Int64()
 		delta := time.Unix(now, 0).Sub(time.Unix(expiresAt, 0))
@@ -311,6 +334,7 @@ func (r *jwtResponse) VerifyAudience(cmp string, req bool) bool {
 // Compares the exp claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyExpiresAt(cmp int64, req bool) bool {
+	useShortZeroValue(r.Expiration)
 	num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	exp, _ := num.AsBigFloat().Int64()
 	return verifyExp(exp, cmp, req)
@@ -319,6 +343,7 @@ func (r *jwtResponse) VerifyExpiresAt(cmp int64, req bool) bool {
 // Compares the iat claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyIssuedAt(cmp int64, req bool) bool {
+	useShortZeroValue(r.IssuedAt)
 	num, _ := r.IssuedAt.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	iat, _ := num.AsBigFloat().Int64()
 	return verifyIat(iat, cmp, req)
@@ -334,6 +359,7 @@ func (r *jwtResponse) VerifyIssuer(cmp string, req bool) bool {
 // Compares the nbf claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
 func (r *jwtResponse) VerifyNotBefore(cmp int64, req bool) bool {
+	useShortZeroValue(r.NotBefore)
 	num, _ := r.NotBefore.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
 	nbf, _ := num.AsBigFloat().Int64()
 	return verifyNbf(nbf, cmp, req)

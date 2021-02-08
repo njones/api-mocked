@@ -38,16 +38,23 @@ func useTLS(mw *chi.Mux, server serverConfig) *tls.Config {
 	var tlsConfig *tls.Config
 
 	switch {
-	case len(server.SSL.LetsEnc) != 0:
+	case server.SSL.LetsEnc != nil:
 		log.Printf("[tls] %q loading lets encrypt certs ...", server.Name)
 
 		// provide an email address
 		certmagic.DefaultACME.Email = DefaultACMEEmail
+		if server.SSL.LetsEnc.Email != nil {
+			val, err := server.SSL.LetsEnc.Email.Expr.Value(&fileEvalCtx)
+			if err != nil {
+				panic(fmt.Errorf("lets encrypt email: %v", err))
+			}
+			certmagic.DefaultACME.Email = val.AsString()
+		}
 
 		// use the staging endpoint while we're developing
 		certmagic.DefaultACME.CA = certmagic.LetsEncryptProductionCA
 
-		tlsConfig, err = certmagic.TLS(server.SSL.LetsEnc)
+		tlsConfig, err = certmagic.TLS(server.SSL.LetsEnc.Hosts)
 		if err != nil {
 			panic(fmt.Errorf("lets encrypt SSL certs: %v", err))
 		}

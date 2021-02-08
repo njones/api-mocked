@@ -86,15 +86,17 @@ func (p *pubnubPlugin) NewListener() *pngo.Listener {
 		for {
 			select {
 			case message := <-listener.Message:
-				var ch, ns, event string
+
+				var uuid, ch, ns, event string
 				var data interface{}
 				if msg, ok := message.Message.(map[string]interface{}); ok {
 					ch = message.Channel
 					ns, _ = msg["ns"].(string)
 					event, _ = msg["name"].(string)
 					data, _ = msg["data"]
+					uuid, _ = msg["uuid"].(string)
 				}
-				log.Printf("[pubnub] message %s %s %s ...", ch, ns, event)
+				log.Printf("[pubnub] message %s %s %s (%s) ...", ch, ns, event, uuid)
 
 				key := fmt.Sprintf("%s+%s+%s", ch, ns, event) // just smash together so we can have a unique event
 				if key == "++" {
@@ -103,7 +105,10 @@ func (p *pubnubPlugin) NewListener() *pngo.Listener {
 
 				if _, ok := p.On[key]; ok {
 					log.Println("[pubnub] execute message callback ...")
-					p.On[key](message.Publisher, ns, data)
+					if uuid == "" {
+						uuid = message.Publisher
+					}
+					p.On[key](uuid, ns, data)
 				}
 			}
 		}
@@ -122,6 +127,7 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 
 	for _, sio := range pn.SubscribeSocketIO {
 		name := p.client.channel[pn.Name]
+		log.Printf("[pubnub] SUB %q %q added ...", sio.Namespace, sio.Event)
 
 		conn.Subscribe().Channels([]string{name}).Execute()
 		p.client.conn[pn.Name].AddListener(listener)
@@ -142,8 +148,11 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 					continue
 				}
 
-				dataVal, err := pub.Data.Expr.Value(&bodyEvalCtx)
-				if log.OnErr(err).Printf("[pubnub] callback failed to emit: %v", err).HasErr() {
+				dataVal, dia := pub.Data.Expr.Value(&bodyEvalCtx)
+				if dia.HasErrors() {
+					for _, err := range dia.Errs() {
+						log.Printf("[pubnub] callback failed to emit: %v", err)
+					}
 					return
 				}
 
@@ -154,7 +163,9 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 				}
 
 				log.Println("[pubnub] callback emit ...")
-				conn.Publish().Channel(pub.Channel).Message(msg).Execute() // TODO(njones):look for errors
+				_, status, err := conn.Publish().Channel(pub.Channel).Message(msg).Execute() // TODO(njones):look for errors
+				log.Printf("[pubnub] broadcast status: %d", status.StatusCode)
+				log.OnErr(err).Printf("[pubnub] error: %v", err)
 			}
 
 			for _, pub := range sio.Broadcast {
@@ -162,8 +173,11 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 					continue
 				}
 
-				dataVal, err := pub.Data.Expr.Value(&bodyEvalCtx)
-				if log.OnErr(err).Printf("[pubnub] callback failed to broadcast: %v", err).HasErr() {
+				dataVal, dia := pub.Data.Expr.Value(&bodyEvalCtx)
+				if dia.HasErrors() {
+					for _, err := range dia.Errs() {
+						log.Printf("[pubnub] callback failed to broadcast: %v", err)
+					}
 					return
 				}
 
@@ -180,7 +194,7 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 	}
 }
 
-func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Handler, bool) {
+func (p *pubnubPlugin) Serve(r route, req request) (middleware, bool) {
 	if len(req.PubNub) == 0 {
 		return nil, false
 	}
@@ -190,7 +204,7 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 	if req.Order == "unordered" {
 		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
 	}
-	log.Print("[pubnub] adding http response ...")
+	log.Printf("[pubnub] %s http response added ...", r.Path)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Print("[pubnub] starting http response ...")
@@ -202,22 +216,28 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 			go func() {
 				defer timeoutTimer.Stop()
 
-				log.Print("[pubnub] starting tick ...")
+				if len(resps) > 1 {
+					log.Print("[pubnub] starting tick ...")
+				}
 				for {
 					var x int64
+					var u string
 					switch req.Order {
 					case "random":
-						log.Print(`[pubnub] using "random" ...`)
+						u = `[pubnub] using "random" ...`
 						x = rand.Int63n(int64(len(resps) * 2))
 					case "unordered":
-						log.Print(`[pubnub] using "unordered" ...`)
+						u = `[pubnub] using "unordered" ...`
 						x = atomic.AddInt64(&idx, 1)
 						if int(x)%len(resps) == 0 {
 							rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
 						}
 					default:
-						log.Print(`[pubnub] using "ordered" ...`)
+						u = `[pubnub] using "ordered" ...`
 						x = atomic.AddInt64(&idx, 1)
+					}
+					if len(resps) > 1 {
+						log.Print(u)
 					}
 
 					log.Print(`[pubnub] collecting the response ...`)
@@ -239,9 +259,11 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 						}
 						log.Printf("[pubnub] http message %s %s %s ...", resp.Name, sio.Namespace, sio.Event)
 
-						dataVal, err := sio.Data.Expr.Value(&bodyEvalCtx)
-						if err != nil {
-							log.Printf("[pubnub] http failed to broadcast: %v", err)
+						dataVal, dia := sio.Data.Expr.Value(&bodyEvalCtx)
+						if dia.HasErrors() {
+							for _, err := range dia.Errs() {
+								log.Printf("[pubnub] http failed to broadcast: %v", err)
+							}
 							return
 						}
 
@@ -252,10 +274,14 @@ func (p *pubnubPlugin) Serve(r route, req request) (func(http.Handler) http.Hand
 						}
 
 						log.Println("[pubnub] http broadcast ...")
-						conn.Publish().Channel(p.client.channel[resp.Name]).Message(msg).Execute()
+						_, status, err := conn.Publish().Channel(p.client.channel[resp.Name]).Message(msg).Execute()
+						log.Printf("[pubnub] broadcast status: %d", status.StatusCode)
+						log.OnErr(err).Printf("[pubnub] error: %v", err)
 					}
 
-					log.Print(`[pubnub] checking ticker (repeat) ...`)
+					if len(resps) > 0 {
+						log.Print(`[pubnub] checking ticker (repeat) ...`)
+					}
 					if len(timeout) == 0 && req.Ticker != nil && len(req.Ticker.Time) > 0 {
 						time.Sleep(delay(req.Ticker.Time))
 						log.Print(`[pubnub] continue ...`)

@@ -13,12 +13,13 @@ import (
 )
 
 type ctxKey string
+type middleware func(http.Handler) http.Handler
 
 var plugins = make(map[string]Plugin)
 
 type Plugin interface {
 	Setup(*Config) error
-	Serve(route, request) (func(http.Handler) http.Handler, bool)
+	Serve(route, request) (middleware, bool)
 }
 
 func _http(config *Config) chan struct{} {
@@ -37,7 +38,7 @@ func _http(config *Config) chan struct{} {
 	for _, route := range config.Routes {
 
 		// setup CORS if needed...
-		var corsMidware func(next http.Handler) http.Handler
+		var corsMidware middleware
 		if route.CORS != nil {
 			block := *route.CORS // copy them here...
 			corsMidware = func(next http.Handler) http.Handler {
@@ -54,12 +55,30 @@ func _http(config *Config) chan struct{} {
 		for _, req := range route.Request {
 			for _, method := range strings.Split(req.Method, "|") {
 				method = strings.TrimSpace(method)
+				var midware chi.Middlewares
+
+				// add any method middleware
+				if strings.ToUpper(method) == http.MethodPost {
+					midware = append(midware, func(next http.Handler) http.Handler {
+						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							for k, v := range req.Posted {
+								if v == "*" {
+									continue
+								}
+								if v != r.PostFormValue(k) {
+									ro.NotFoundHandler().ServeHTTP(w, r)
+									return
+								}
+							}
+							next.ServeHTTP(w, r)
+						})
+					})
+				}
 
 				// add any plugin middleware
-				var midware chi.Middlewares
 				for k, plugin := range plugins {
 					if hdlr, ok := plugin.Serve(route, req); ok {
-						log.Printf("[%s] middleware added %s %s ...", k, strings.ToUpper(method), route.Path)
+						log.Printf("[http][%s] %s middleware added ...", k, route.Path)
 						midware = append(midware, hdlr)
 					}
 				}
@@ -90,12 +109,12 @@ func _http(config *Config) chan struct{} {
 		})
 	}
 
-	// check for custom method not found handler
+	// check for custom method not allowed handler
 	if config.MethodNotAllowed != nil {
 		ro.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 			var status = config.MethodNotAllowed.Response.Status
 			n, err := strconv.ParseInt(status, 10, 16)
-			log.OnErr(err).Println("[error] method not found parse int: %v", err)
+			log.OnErr(err).Println("[error] method not allowed parse int: %v", err)
 
 			w.WriteHeader(int(n))
 			body, _ := config.MethodNotAllowed.Response.Body.Expr.Value(&bodyEvalCtx)

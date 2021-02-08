@@ -64,7 +64,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 
 	if config.System != nil && config.System.LogDir != nil {
 		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
-			log.Fatal("[server] the log dir: %v does not exist", *config.System.LogDir)
+			log.Fatalf("[server] the log dir: %v does not exist", *config.System.LogDir)
 		}
 	} else {
 		log.Println("[server] SKIPPING logging of reload and panic errors")

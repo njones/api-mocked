@@ -108,11 +108,14 @@ type jwtConfig struct {
 
 // SSL config options
 type sslConfig struct {
-	CACrt   string   `hcl:"ca_cert,optional"`
-	CAKey   string   `hcl:"ca_key,optional"`
-	Crt     string   `hcl:"cert,optional"`
-	Key     string   `hcl:"key,optional"`
-	LetsEnc []string `hcl:"lets_encrypt,optional"`
+	CACrt   string `hcl:"ca_cert,optional"`
+	CAKey   string `hcl:"ca_key,optional"`
+	Crt     string `hcl:"cert,optional"`
+	Key     string `hcl:"key,optional"`
+	LetsEnc *struct {
+		Hosts []string       `hcl:"hosts"`
+		Email *hcl.Attribute `hcl:"email"`
+	} `hcl:"lets_encrypt,block"`
 }
 
 type route struct {
@@ -144,11 +147,12 @@ type request struct {
 	Order string `hcl:"order,optional"`
 	Delay string `hcl:"delay,optional"`
 
-	JWT      *jwtRequest `hcl:"jwt,block"`
-	Headers  *headers    `hcl:"header,block"`
-	Response []response  `hcl:"response,block"`
-	SocketIO []socketio  `hcl:"socketio,block"`
-	PubNub   []pubnub    `hcl:"pubnub,block"`
+	JWT      *jwtRequest       `hcl:"jwt,block"`
+	Headers  *headers          `hcl:"header,block"`
+	Response []response        `hcl:"response,block"`
+	SocketIO []socketio        `hcl:"socketio,block"`
+	PubNub   []pubnub          `hcl:"pubnub,block"`
+	Posted   map[string]string `hcl:"post_values,optional"`
 }
 
 type response struct {
@@ -206,7 +210,7 @@ type pubnub struct {
 	SubscribeSocketIO []struct {
 		Namespace string        `hcl:"ns,label"`
 		Event     string        `hcl:"event,label"`
-		Delay     string        `hcl:"delay"`
+		Delay     string        `hcl:"delay,optional"`
 		Broadcast []pnBroadcast `hcl:"broadcast_socketio,block"`
 		Emit      []pnEmit      `hcl:"emit_socketio,block"`
 	} `hcl:"subscribe,block"`
