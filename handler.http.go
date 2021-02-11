@@ -81,10 +81,10 @@ func httpHandler(req request) http.HandlerFunc {
 
 		// Add all of the template functions
 		var bodyFuncs template.FuncMap = map[string]interface{}{
-			"Header":     func(s string) string { return r.Header.Get(s) },
-			"URLParam":   func(s string) string { return chi.URLParam(r, s) },
-			"QueryParam": func(s string) string { return r.URL.Query().Get(s) },
-			"JWTField": func(s string) string {
+			"Header": func(s string) string { return r.Header.Get(s) },
+			"URL":    func(s string) string { return chi.URLParam(r, s) },
+			"Query":  func(s string) string { return r.URL.Query().Get(s) },
+			"JWT": func(s string) string {
 				if token != nil {
 					if claims, ok := token.Claims.(jwtgo.MapClaims); ok {
 						if value, ok := claims[s]; ok {

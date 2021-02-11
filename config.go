@@ -34,13 +34,11 @@ type Config struct {
 	}
 	serviceControl
 
-	Version string `hcl:"version,optional"`
-
+	Version string         `hcl:"version,optional"`
 	System  *system        `hcl:"system,block"`
 	Servers []serverConfig `hcl:"server,block"`
 
-	Routes     []route     `hcl:"path,block"`
-	Websockets []websocket `hcl:"websocket,block"`
+	Routes []route `hcl:"path,block"`
 
 	NotFound *struct {
 		Response response `hcl:"response,block"`
@@ -48,6 +46,8 @@ type Config struct {
 	MethodNotAllowed *struct {
 		Response response `hcl:"response,block"`
 	} `hcl:"methodnotallowed,block"`
+
+	Plugins hcl.Body `hcl:",remain"`
 }
 
 type system struct {
@@ -72,29 +72,16 @@ type serverConfig struct {
 	Host      string     `hcl:"host,optional"`
 	HTTP2     bool       `hcl:"http2_only,optional"`
 	BasicAuth *baConfig  `hcl:"basic_auth,block"`
-	PubNub    *pnConfig  `hcl:"pubnub,block"`
-	SocketIO  *sioConfig `hcl:"socketio,block"`
 	JWT       *jwtConfig `hcl:"jwt,block"`
 	SSL       *sslConfig `hcl:"ssl,block"`
+
+	Plugins hcl.Body `hcl:",remain"`
 }
 
 // basic auth config options
 type baConfig struct {
 	User string `hcl:"username,optional"`
 	Pass string `hcl:"password,optional"`
-}
-
-type pnConfig struct {
-	Name         string         `hcl:"name,label"`
-	PublishKey   *hcl.Attribute `hcl:"publish_key"`
-	SubscribeKey *hcl.Attribute `hcl:"subscribe_key"`
-	Channel      string         `hcl:"channel,optional"`
-	UUID         string         `hcl:"uuid,optional"`
-}
-
-type sioConfig struct {
-	Name string `hcl:"name,label"`
-	UUID string `hcl:"id,optional"`
 }
 
 // JWT config options
@@ -123,14 +110,9 @@ type route struct {
 	Desc string     `hcl:"_-,optional"`
 	CORS *corsBlock `hcl:"cors,block"`
 
-	Request  []request  `hcl:"request,block"`
-	SocketIO []socketio `hcl:"socketio,block"`
-	PubNub   []pubnub   `hcl:"pubnub,block"`
-}
+	Request []request `hcl:"request,block"`
 
-type websocket struct {
-	PubNub   []pubnub   `hcl:"pubnub,block"`
-	SocketIO []socketio `hcl:"socketio,block"`
+	Plugins hcl.Body `hcl:",remain"`
 }
 
 type request struct {
@@ -149,17 +131,17 @@ type request struct {
 
 	JWT      *jwtRequest       `hcl:"jwt,block"`
 	Headers  *headers          `hcl:"header,block"`
-	Response []response        `hcl:"response,block"`
-	SocketIO []socketio        `hcl:"socketio,block"`
-	PubNub   []pubnub          `hcl:"pubnub,block"`
 	Posted   map[string]string `hcl:"post_values,optional"`
+	Response []response        `hcl:"response,block"`
+
+	Plugins hcl.Body `hcl:",remain"`
 }
 
 type response struct {
 	Status  string         `hcl:"status,label"`
 	Headers *headers       `hcl:"header,block"`
-	Body    *hcl.Attribute `hcl:"body"`
 	JWT     *jwtResponse   `hcl:"jwt,block"`
+	Body    *hcl.Attribute `hcl:"body"`
 	PubKey  *string        `hcl:"hpkp"`
 }
 
@@ -174,8 +156,8 @@ type jwtRequest struct {
 
 type jwtResponse struct {
 	Name   string `hcl:"name,label"`
-	Output string `hcl:"output,label"`
 	Key    string `hcl:"key,label"`
+	Output string `hcl:"output,label"`
 
 	Subject    *hcl.Attribute    `hcl:"sub" json:"sub"`
 	Issuers    *hcl.Attribute    `hcl:"iss" json:"iss"`
@@ -189,51 +171,4 @@ type jwtResponse struct {
 	Payload    map[string]string `hcl:",remain"`
 
 	_hclVarMap map[string]map[string]cty.Value
-}
-
-type pnBroadcast struct {
-	Namespace string         `hcl:"ns,label"`
-	Event     string         `hcl:"event,label"`
-	Channel   string         `hcl:"channel,optional"`
-	Data      *hcl.Attribute `hcl:"data"`
-}
-
-type pnEmit struct {
-	Channel string         `hcl:"channel,optional"`
-	Data    *hcl.Attribute `hcl:"data"`
-}
-
-type pubnub struct {
-	Name string `hcl:"name,label"`
-	Desc string `hcl:"_-,optional"`
-
-	SubscribeSocketIO []struct {
-		Namespace string        `hcl:"ns,label"`
-		Event     string        `hcl:"event,label"`
-		Delay     string        `hcl:"delay,optional"`
-		Broadcast []pnBroadcast `hcl:"broadcast_socketio,block"`
-		Emit      []pnEmit      `hcl:"emit_socketio,block"`
-	} `hcl:"subscribe,block"`
-
-	PublishSocketIO []pnBroadcast `hcl:"broadcast_socketio,block"`
-}
-
-type socketio struct {
-	Name  string `hcl:"name,label"`
-	Event string `hcl:"event,label"`
-	Desc  string `hcl:"_-,optional"`
-
-	Broadcast []struct {
-		Room  string   `hcl:"room,label"`
-		Event string   `hcl:"event,label"`
-		Args  hcl.Body `hcl:",remain"`
-	} `hcl:"broadcast,block"`
-	BroadcastAll []struct {
-		Event string   `hcl:"event,label"`
-		Args  hcl.Body `hcl:",remain"`
-	} `hcl:"broadcast_all,block"`
-	Emit []struct {
-		Event string   `hcl:"event,label"`
-		Args  hcl.Body `hcl:",remain"`
-	} `hcl:"emit,block"`
 }

@@ -10,14 +10,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/gohcl"
 	pngo "github.com/pubnub/go"
 	"github.com/rs/xid"
 )
 
+const pubnubPluginName = "pubnub"
+
 func init() {
 	log.Println("[init] loading the PubNub plugin ...")
-	plugins["pubnub"] = new(pubnubPlugin)
+	plugins[pubnubPluginName] = new(pubnubPlugin)
 }
+
+type pnServerName string
 
 type pubnubPlugin struct {
 	isSetup bool
@@ -26,7 +32,44 @@ type pubnubPlugin struct {
 		channel map[string]string
 	}
 
+	config map[string]pubnubConfig
+
 	On map[string]func(string, string, interface{})
+}
+
+type pubnubConfig struct {
+	Name         string         `hcl:"name,label"`
+	PublishKey   *hcl.Attribute `hcl:"publish_key"`
+	SubscribeKey *hcl.Attribute `hcl:"subscribe_key"`
+	Channel      string         `hcl:"channel,optional"`
+	UUID         string         `hcl:"uuid,optional"`
+}
+
+type pubnub struct {
+	Name string `hcl:"name,label"`
+	Desc string `hcl:"_-,optional"`
+
+	SubscribeSocketIO []struct {
+		Namespace string            `hcl:"ns,label"`
+		Event     string            `hcl:"event,label"`
+		Delay     string            `hcl:"delay,optional"`
+		Broadcast []pubnubBroadcast `hcl:"broadcast_socketio,block"`
+		Emit      []pubnubEmit      `hcl:"emit_socketio,block"`
+	} `hcl:"subscribe,block"`
+
+	PublishSocketIO []pubnubBroadcast `hcl:"broadcast_socketio,block"`
+}
+
+type pubnubBroadcast struct {
+	Namespace string         `hcl:"ns,label"`
+	Event     string         `hcl:"event,label"`
+	Channel   string         `hcl:"channel,optional"`
+	Data      *hcl.Attribute `hcl:"data"`
+}
+
+type pubnubEmit struct {
+	Channel string         `hcl:"channel,optional"`
+	Data    *hcl.Attribute `hcl:"data"`
 }
 
 func (p *pubnubPlugin) Setup(config *Config) (err error) {
@@ -34,23 +77,49 @@ func (p *pubnubPlugin) Setup(config *Config) (err error) {
 
 	p.client.conn = make(map[string]*pngo.PubNub)
 	p.client.channel = make(map[string]string)
+	p.config = make(map[string]pubnubConfig)
 	p.On = make(map[string]func(string, string, interface{}))
 
-	for _, v := range config.Servers {
-		if v.PubNub == nil {
+	for _, svr := range config.Servers {
+		cfg := p.config[svr.Name]
+
+		svrb, _, _ := svr.Plugins.PartialContent(&hcl.BodySchema{
+			Blocks: []hcl.BlockHeaderSchema{
+				{
+					Type:       pubnubPluginName,
+					LabelNames: []string{"name"},
+				},
+			},
+		})
+
+		if len(svrb.Blocks) == 0 {
 			continue
 		}
 
-		if v.PubNub.UUID == "" {
-			v.PubNub.UUID = xid.New().String()
+		for _, block := range svrb.Blocks {
+			var pnc pubnubConfig
+			switch block.Type {
+			case pubnubPluginName:
+				gohcl.DecodeBody(block.Body, nil, &pnc)
+				if len(block.Labels) > 0 {
+					pnc.Name = block.Labels[0] // the same index as the LabelNames above...
+				}
+				p.config[svr.Name] = pnc
+				cfg = p.config[svr.Name]
+			}
 		}
 
-		publishKey, err := v.PubNub.PublishKey.Expr.Value(&fileEvalCtx)
+		if cfg.UUID == "" {
+			cfg.UUID = xid.New().String()
+			p.config[svr.Name] = cfg
+		}
+
+		publishKey, err := cfg.PublishKey.Expr.Value(&fileEvalCtx)
 		if err != nil {
 			return err
 		}
 
-		subscribeKey, err := v.PubNub.SubscribeKey.Expr.Value(&fileEvalCtx)
+		subscribeKey, err := cfg.SubscribeKey.Expr.Value(&fileEvalCtx)
 		if err != nil {
 			return err
 		}
@@ -58,18 +127,33 @@ func (p *pubnubPlugin) Setup(config *Config) (err error) {
 		var conf = pngo.NewConfig()
 		conf.PublishKey = publishKey.AsString()
 		conf.SubscribeKey = subscribeKey.AsString()
-		conf.UUID = v.PubNub.UUID
+		conf.UUID = p.config[svr.Name].UUID
 
-		p.client.conn[v.PubNub.Name] = pngo.NewPubNub(conf)
-		p.client.channel[v.PubNub.Name] = v.PubNub.Channel
+		p.client.conn[cfg.Name] = pngo.NewPubNub(conf)
+		p.client.channel[cfg.Name] = cfg.Channel
 
-		log.Printf("[pubnub] client %s (channel: %q uuid: %q) ...", v.PubNub.Name, v.PubNub.Channel, v.PubNub.UUID)
+		log.Printf("[pubnub] client %s (channel: %q uuid: %q) ...", cfg.Name, cfg.Channel, cfg.UUID)
 	}
 
 	listener := p.NewListener()
 
-	for _, ws := range config.Websockets {
-		for _, pn := range ws.PubNub {
+	cfgb, _, _ := config.Plugins.PartialContent(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{
+				Type:       pubnubPluginName,
+				LabelNames: []string{"name"},
+			},
+		},
+	})
+
+	for _, block := range cfgb.Blocks {
+		var pn pubnub
+		switch block.Type {
+		case pubnubPluginName:
+			gohcl.DecodeBody(block.Body, nil, &pn)
+			if len(block.Labels) > 0 {
+				pn.Name = block.Labels[0] // the same index as the LabelNames above...
+			}
 			p.Subscribe(pn, listener)
 		}
 	}
@@ -195,12 +279,38 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 }
 
 func (p *pubnubPlugin) Serve(r route, req request) (middleware, bool) {
-	if len(req.PubNub) == 0 {
+	reqb, _, _ := req.Plugins.PartialContent(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{
+				Type:       pubnubPluginName,
+				LabelNames: []string{"name"},
+			},
+		},
+	})
+
+	if len(reqb.Blocks) == 0 {
+		return nil, false
+	}
+
+	var reqPubNub []pubnub
+	for _, block := range reqb.Blocks {
+		var pn pubnub
+		switch block.Type {
+		case pubnubPluginName:
+			gohcl.DecodeBody(block.Body, nil, &pn)
+			if len(block.Labels) > 0 {
+				pn.Name = block.Labels[0]
+			}
+			reqPubNub = append(reqPubNub, pn)
+		}
+	}
+
+	if len(reqPubNub) == 0 {
 		return nil, false
 	}
 
 	var idx = int64(-1)
-	var resps = req.PubNub
+	var resps = reqPubNub
 	if req.Order == "unordered" {
 		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
 	}

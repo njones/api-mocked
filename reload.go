@@ -57,27 +57,26 @@ func _reload(config Config) chan struct{} {
 type reloadSliceManager struct {
 	s []serverConfig
 	r []route
-	w []websocket
 }
 
 func (rs *reloadSliceManager) isReload() bool {
 	return len(rs.s) > 0
 }
 
-func (rs *reloadSliceManager) put(s []serverConfig, r []route, w []websocket) {
-	rs.s, rs.r, rs.w = s, r, w
+func (rs *reloadSliceManager) put(s []serverConfig, r []route) {
+	rs.s, rs.r = s, r
 }
 
-func (rs *reloadSliceManager) get() ([]serverConfig, []route, []websocket) {
-	return rs.s, rs.r, rs.w
+func (rs *reloadSliceManager) get() ([]serverConfig, []route) {
+	return rs.s, rs.r
 }
 
 func (rs *reloadSliceManager) del() {
-	rs.s, rs.r, rs.w = rs.s[:0], rs.r[:0], rs.w[:0]
+	rs.s, rs.r = rs.s[:0], rs.r[:0]
 }
 
-func (rs *reloadSliceManager) nil() ([]serverConfig, []route, []websocket) {
-	return []serverConfig(nil), []route(nil), []websocket(nil)
+func (rs *reloadSliceManager) nil() ([]serverConfig, []route) {
+	return []serverConfig(nil), []route(nil)
 }
 
 type reloadError struct {

@@ -215,39 +215,39 @@ func TestRequestHandler(t *testing.T) {
 		test(t, "queryparam template",
 			testURL("/this/is/standard/World?hello=World"),
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ QueryParam "hello" }}`),
+				Status: "200", Body: attr(`Hello, {{ Query "hello" }}`),
 			}),
 		),
 		test(t, "queryparam invalid template",
 			testURL("/this/is/standard/World?playground=World"),
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ QueryParam "hello" }}`),
+				Status: "200", Body: attr(`Hello, {{ Query "hello" }}`),
 			}),
 			testWant(200, "Hello, "),
 		),
 		test(t, "urlparam template",
 			testPath("/this/is/standard/{id}"),
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ URLParam "id" }}`),
+				Status: "200", Body: attr(`Hello, {{ URL "id" }}`),
 			}),
 		),
 
 		// JWT Token
 		test(t, "jwt auth template",
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ JWTField "hello" }}`),
+				Status: "200", Body: attr(`Hello, {{ JWT "hello" }}`),
 			}),
 		),
 		test(t, "jwt cookie template",
 			testJWTInput("cookie", "works"),
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ JWTField "hello" }}`),
+				Status: "200", Body: attr(`Hello, {{ JWT "hello" }}`),
 			}),
 		),
 		test(t, "jwt header template",
 			testJWTInput("header", "x-jwt-test-header"),
 			testResponse(response{
-				Status: "200", Body: attr(`Hello, {{ JWTField "hello" }}`),
+				Status: "200", Body: attr(`Hello, {{ JWT "hello" }}`),
 			}),
 		),
 		test(t, "jwt invalid secret",

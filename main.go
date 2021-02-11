@@ -54,13 +54,16 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 	}
 
 	re := reloadError{os: config.internal.os}
-	// save any panics so we can recover from them
-	defer func() {
-		if r := recover(); r != nil {
-			re.save(config, fmt.Errorf("%s", string(debug.Stack())), "panic")
-			log.Fatal(r)
+	func(b bool) { // this function is so we can develop quickly...
+		if b { // save any panics so we can recover from them
+			defer func() {
+				if r := recover(); r != nil {
+					re.save(config, fmt.Errorf("%s", string(debug.Stack())), "panic")
+					log.Fatal(r)
+				}
+			}()
 		}
-	}()
+	}(true)
 
 	if config.System != nil && config.System.LogDir != nil {
 		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
@@ -78,7 +81,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 		// reset all of these slices because the decode will
 		// have problems if on a reload they are already
 		// filled in and not the same size
-		config.Servers, config.Routes, config.Websockets = mgr.nil() // send back nil, so these are clean to decode into
+		config.Servers, config.Routes = mgr.nil() // send back nil, so these are clean to decode into
 
 		log.Printf("[server] loading the config file: %s ...", config.internal.file)
 		if err := hclsimple.DecodeFile(config.internal.file, _context(), &config); err != nil {
@@ -87,7 +90,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 			}
 			re.save(config, err, "reload")
 			config.internal.svrCfgLoadValid = false
-			config.Servers, config.Routes, config.Websockets = mgr.get() // add the old copy back
+			config.Servers, config.Routes = mgr.get() // add the old copy back
 		}
 		mgr.del() // remove old copy
 
@@ -102,7 +105,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 			config.internal.svrCfgLoadValid = true
 			log.Println("[server] reloading ...")
 
-			mgr.put(config.Servers, config.Routes, config.Websockets) // save a copy
+			mgr.put(config.Servers, config.Routes) // save a copy
 		case <-shutdown:
 			return "Done"
 		}

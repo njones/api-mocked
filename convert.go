@@ -28,7 +28,7 @@ type Options struct {
 var interval = map[string]time.Duration{
 	"ns": time.Nanosecond,
 	"ms": time.Millisecond,
-	"µ":  time.Microsecond,
+	"µs": time.Microsecond,
 	"s":  time.Second,
 	"m":  time.Minute,
 	"h":  time.Hour,
