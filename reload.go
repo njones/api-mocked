@@ -55,19 +55,19 @@ func _reload(config Config) chan struct{} {
 // this is just a way to manage adding and removing the slices
 // and cleaning up
 type reloadSliceManager struct {
-	s []serverConfig
-	r []route
+	s []ConfigHTTP
+	r []Route
 }
 
 func (rs *reloadSliceManager) isReload() bool {
 	return len(rs.s) > 0
 }
 
-func (rs *reloadSliceManager) put(s []serverConfig, r []route) {
+func (rs *reloadSliceManager) put(s []ConfigHTTP, r []Route) {
 	rs.s, rs.r = s, r
 }
 
-func (rs *reloadSliceManager) get() ([]serverConfig, []route) {
+func (rs *reloadSliceManager) get() ([]ConfigHTTP, []Route) {
 	return rs.s, rs.r
 }
 
@@ -75,8 +75,8 @@ func (rs *reloadSliceManager) del() {
 	rs.s, rs.r = rs.s[:0], rs.r[:0]
 }
 
-func (rs *reloadSliceManager) nil() ([]serverConfig, []route) {
-	return []serverConfig(nil), []route(nil)
+func (rs *reloadSliceManager) nil() ([]ConfigHTTP, []Route) {
+	return []ConfigHTTP(nil), []Route(nil)
 }
 
 type reloadError struct {

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func corsHandler(cors *corsBlock) http.HandlerFunc {
+func corsHandler(cors *routeCORS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Println("[cors] sending back headers ...")
 		if cors == nil {

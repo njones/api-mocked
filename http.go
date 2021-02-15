@@ -4,32 +4,28 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	jwtgo "github.com/dgrijalva/jwt-go"
 	"github.com/go-chi/chi"
 )
 
 type ctxKey string
-type middleware func(http.Handler) http.Handler
 
 var plugins = make(map[string]Plugin)
 
-type Plugin interface {
-	Setup(*Config) error
-	Serve(route, request) (middleware, bool)
+type PluginHTTP interface {
+	MiddlewareHTTP(Route, RequestHTTP) (MiddlewareHTTP, bool)
 }
 
+const JWTTokenCtxKey ctxKey = "_jwt_token_"
+const UseProxyCtxKey ctxKey = "_use_proxy_name_"
+
 func _http(config *Config) chan struct{} {
-	// setup any plugin
-	for name, plugin := range plugins {
-		if err := plugin.Setup(config); err != nil {
-			log.Println("[setup] plugin err: %v", err)
-		}
-		log.Printf("[plugin] setup %v", name)
-	}
 
 	ro := chi.NewRouter() // routes
 	mw := chi.NewRouter() // middleware
@@ -38,7 +34,7 @@ func _http(config *Config) chan struct{} {
 	for _, route := range config.Routes {
 
 		// setup CORS if needed...
-		var corsMidware middleware
+		var corsMidware MiddlewareHTTP
 		if route.CORS != nil {
 			block := *route.CORS // copy them here...
 			corsMidware = func(next http.Handler) http.Handler {
@@ -58,6 +54,42 @@ func _http(config *Config) chan struct{} {
 				var midware chi.Middlewares
 
 				// add any method middleware
+
+				// check for JWT authorization
+				if req.JWT != nil {
+					midware = append(midware, func(next http.Handler) http.Handler {
+						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+							// req.JWT need to have the sigCtxKey already in the context
+							token, err := decodeJWT(w, r, req.JWT)
+							if err != nil {
+								http.Error(w, err.Error(), 401)
+								return
+							}
+
+							// go through the claims and see if the strings match
+							if mc, ok := token.Claims.(jwtgo.MapClaims); ok {
+								for k, v := range mc {
+									if reqv, ok := req.JWT.KeyVals[k]; ok {
+										if v1, ok := v.(string); ok {
+											v2, _ := reqv.Expr.Value(nil)
+											if v1 != v2.AsString() {
+												ro.NotFoundHandler().ServeHTTP(w, r)
+												return
+											}
+										}
+									}
+								}
+							}
+
+							ctx := r.Context()
+							ctx = context.WithValue(ctx, JWTTokenCtxKey, token)
+							next.ServeHTTP(w, r.WithContext(ctx))
+						})
+					})
+				}
+
+				// check for POST values
 				if strings.ToUpper(method) == http.MethodPost {
 					midware = append(midware, func(next http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +109,11 @@ func _http(config *Config) chan struct{} {
 
 				// add any plugin middleware
 				for k, plugin := range plugins {
-					if hdlr, ok := plugin.Serve(route, req); ok {
-						log.Printf("[http][%s] %s middleware added ...", k, route.Path)
-						midware = append(midware, hdlr)
+					if _, ok := plugin.(PluginHTTP); ok {
+						if hdlr, ok := plugin.(PluginHTTP).MiddlewareHTTP(route, req); ok {
+							log.Printf("[http][%s] %s middleware added ...", k, route.Path)
+							midware = append(midware, hdlr)
+						}
 					}
 				}
 
@@ -87,6 +121,18 @@ func _http(config *Config) chan struct{} {
 				if corsMidware != nil {
 					log.Printf("[http] CORS %s added ...", route.Path)
 					midware = append(midware, corsMidware)
+				}
+
+				if route.Proxy != nil {
+					pxy := route.Proxy // capture for the closure...
+					midware = append(midware, func(next http.Handler) http.Handler {
+						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							if proxy, ok := r.Context().Value(ctxKey(pxy.Name)).(*configProxy); ok {
+								useProxy(proxy, w, r, pxy.Headers) // async call
+								return
+							}
+						})
+					})
 				}
 
 				// add the handler with the proper middleware
@@ -168,6 +214,21 @@ func _http(config *Config) chan struct{} {
 						return
 					}
 					next.ServeHTTP(w, r)
+				})
+			})
+		}
+
+		if server.Proxy != nil {
+			log.Printf("[proxy] %q add proxy %q lookup ...", server.Name, server.Proxy.Name)
+			urlParsed, err := url.Parse(server.Proxy.URL)
+			if err != nil {
+				log.Fatalf("[server] %q parse proxy block: %v", server.Proxy.Name, err)
+			}
+			server.Proxy._url = urlParsed
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					ctx := context.WithValue(r.Context(), ctxKey(server.Proxy.Name), server.Proxy)
+					next.ServeHTTP(w, r.WithContext(ctx))
 				})
 			})
 		}

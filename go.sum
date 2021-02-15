@@ -34,6 +34,8 @@ github.com/gorilla/websocket v1.4.2 h1:+/TMaTYc4QFitKJxsQ7Yye35DkWvkdLcvGKqM+x0U
 github.com/gorilla/websocket v1.4.2/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/hashicorp/hcl/v2 v2.7.0 h1:IU8qz5UzZ1po3M1D9/Kq6S5zbDGVfI9bnzmC1ogKKmI=
 github.com/hashicorp/hcl/v2 v2.7.0/go.mod h1:bQTN5mpo+jewjJgh8jr0JUguIi7qPHUF6yIfAEN3jqY=
+github.com/jaswdr/faker v1.3.0 h1:zkSkC6+khN6Pf3H6nDfeErq0NenDKGnHowEtSDaXWwI=
+github.com/jaswdr/faker v1.3.0/go.mod h1:x7ZlyB1AZqwqKZgyQlnqEG8FDptmHlncA5u2zY/yi6w=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/cpuid v1.2.5 h1:VBd9MyVIiJHzzgnrLQG5Bcv75H4YaWrlKqWHjurxCGo=
 github.com/klauspost/cpuid v1.2.5/go.mod h1:bYW4mA6ZgKPob1/Dlai2LviZJO7KGI3uoWLd42rAQw4=

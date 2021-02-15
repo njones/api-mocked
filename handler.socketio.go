@@ -62,43 +62,48 @@ var convertToJSON = func(body hcl.Body) map[string]interface{} {
 	return jsonData
 }
 
-func (p *socketioPlugin) Setup(config *Config) error {
+func (p *socketioPlugin) Setup() error {
 	log.Println("[socketio] setup plugin ...")
 
 	p.conn = make(map[string]*sktio.Server)
 	p.config = make(map[string]socketioConfig)
 
-	for _, svr := range config.Servers {
+	return nil
+}
 
-		svrb, _, _ := svr.Plugins.PartialContent(&hcl.BodySchema{
-			Blocks: []hcl.BlockHeaderSchema{
-				{
-					Type:       socketioPluginName,
-					LabelNames: []string{"name"},
-				},
+func (p *socketioPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) error {
+	svrb, _, _ := svrPlugins.PartialContent(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{
+				Type:       socketioPluginName,
+				LabelNames: []string{"name"},
 			},
-		})
+		},
+	})
 
-		if len(svrb.Blocks) == 0 {
-			continue
-		}
-
-		for _, block := range svrb.Blocks {
-			var sioc socketioConfig
-			switch block.Type {
-			case socketioPluginName:
-				gohcl.DecodeBody(block.Body, nil, &sioc)
-				if len(block.Labels) > 0 {
-					sioc.Name = block.Labels[0] // the same index as the LabelNames above...
-				}
-				p.config[svr.Name] = sioc
-			}
-		}
-
-		p.conn[svr.Name] = sktio.NewServer(transport.GetDefaultWebsocketTransport())
+	if len(svrb.Blocks) == 0 {
+		return nil
 	}
 
-	cfgb, _, _ := config.Plugins.PartialContent(&hcl.BodySchema{
+	for _, block := range svrb.Blocks {
+		var sioc socketioConfig
+		switch block.Type {
+		case socketioPluginName:
+			gohcl.DecodeBody(block.Body, nil, &sioc)
+			if len(block.Labels) > 0 {
+				sioc.Name = block.Labels[0] // the same index as the LabelNames above...
+			}
+			p.config[svrName] = sioc
+		}
+	}
+
+	p.conn[svrName] = sktio.NewServer(transport.GetDefaultWebsocketTransport())
+
+	return nil
+}
+
+func (p *socketioPlugin) SetupRoot(configPlugins hcl.Body) error {
+	cfgb, _, _ := configPlugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{
 				Type:       socketioPluginName,
@@ -144,7 +149,7 @@ func (p *socketioPlugin) Subscribe(sio socketio) {
 	})
 }
 
-func (p *socketioPlugin) Serve(r route, req request) (middleware, bool) {
+func (p *socketioPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP, bool) {
 	reqb, _, _ := req.Plugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{

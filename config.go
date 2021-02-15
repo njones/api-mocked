@@ -1,11 +1,12 @@
 package main
 
 import (
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/spf13/afero"
-	"github.com/zclconf/go-cty/cty"
 )
 
 type serviceControl struct {
@@ -34,17 +35,17 @@ type Config struct {
 	}
 	serviceControl
 
-	Version string         `hcl:"version,optional"`
-	System  *system        `hcl:"system,block"`
-	Servers []serverConfig `hcl:"server,block"`
+	Version string       `hcl:"version,optional"`
+	System  *system      `hcl:"system,block"`
+	Servers []ConfigHTTP `hcl:"http,block"`
 
-	Routes []route `hcl:"path,block"`
+	Routes []Route `hcl:"path,block"`
 
 	NotFound *struct {
-		Response response `hcl:"response,block"`
+		Response ResponseHTTP `hcl:"response,block"`
 	} `hcl:"notfound,block"`
 	MethodNotAllowed *struct {
-		Response response `hcl:"response,block"`
+		Response ResponseHTTP `hcl:"response,block"`
 	} `hcl:"methodnotallowed,block"`
 
 	Plugins hcl.Body `hcl:",remain"`
@@ -58,34 +59,26 @@ type headers struct {
 	Data map[string][]string `hcl:",remain"`
 }
 
-type corsBlock struct {
-	AllowOrigin      string   `hcl:"allow_origin,label"`
-	AllowMethods     []string `hcl:"allow_methods,optional"`
-	AllowHeaders     []string `hcl:"allow_headers,optional"`
-	MaxAge           *int     `hcl:"max_age"`
-	AllowCredentials *bool    `hcl:"Allow_Credentials"`
-}
-
-// server config options
-type serverConfig struct {
-	Name      string     `hcl:"name,label"`
-	Host      string     `hcl:"host,optional"`
-	HTTP2     bool       `hcl:"http2_only,optional"`
-	BasicAuth *baConfig  `hcl:"basic_auth,block"`
-	JWT       *jwtConfig `hcl:"jwt,block"`
-	SSL       *sslConfig `hcl:"ssl,block"`
+type ConfigHTTP struct {
+	Name      string       `hcl:"name,label"`
+	Host      string       `hcl:"host,optional"`
+	HTTP2     bool         `hcl:"http2_only,optional"`
+	BasicAuth *configBA    `hcl:"basic_auth,block"`
+	JWT       *configJWT   `hcl:"jwt,block"`
+	SSL       *configSSL   `hcl:"ssl,block"`
+	Proxy     *configProxy `hcl:"proxy,block"`
 
 	Plugins hcl.Body `hcl:",remain"`
 }
 
 // basic auth config options
-type baConfig struct {
+type configBA struct {
 	User string `hcl:"username,optional"`
 	Pass string `hcl:"password,optional"`
 }
 
 // JWT config options
-type jwtConfig struct {
+type configJWT struct {
 	Name   string         `hcl:"name,label"`
 	Alg    string         `hcl:"algo"`
 	Typ    *string        `hcl:"typ"`
@@ -94,7 +87,7 @@ type jwtConfig struct {
 }
 
 // SSL config options
-type sslConfig struct {
+type configSSL struct {
 	CACrt   string `hcl:"ca_cert,optional"`
 	CAKey   string `hcl:"ca_key,optional"`
 	Crt     string `hcl:"cert,optional"`
@@ -105,17 +98,29 @@ type sslConfig struct {
 	} `hcl:"lets_encrypt,block"`
 }
 
-type route struct {
-	Path string     `hcl:"path,label"`
-	Desc string     `hcl:"_-,optional"`
-	CORS *corsBlock `hcl:"cors,block"`
+type configProxy struct {
+	Name    string   `hcl:"name,label"`
+	URL     string   `hcl:"url"`
+	Mode    string   `hcl:"mode,optional"`
+	Headers *headers `hcl:"headers,block"`
 
-	Request []request `hcl:"request,block"`
+	_url *url.URL
+}
+
+type MiddlewareHTTP func(http.Handler) http.Handler
+
+type Route struct {
+	Path  string      `hcl:"path,label"`
+	Desc  string      `hcl:"_-,optional"`
+	CORS  *routeCORS  `hcl:"cors,block"`
+	Proxy *routeProxy `hcl:"proxy,block"`
+
+	Request []RequestHTTP `hcl:"request,block"`
 
 	Plugins hcl.Body `hcl:",remain"`
 }
 
-type request struct {
+type RequestHTTP struct {
 	Method string `hcl:"method,label"`
 
 	Ticker *struct {
@@ -129,35 +134,48 @@ type request struct {
 	Order string `hcl:"order,optional"`
 	Delay string `hcl:"delay,optional"`
 
-	JWT      *jwtRequest       `hcl:"jwt,block"`
-	Headers  *headers          `hcl:"header,block"`
-	Posted   map[string]string `hcl:"post_values,optional"`
-	Response []response        `hcl:"response,block"`
+	JWT     *requestJWT       `hcl:"jwt,block"`
+	Headers *headers          `hcl:"header,block"`
+	Posted  map[string]string `hcl:"post_values,optional"`
+
+	Response []ResponseHTTP `hcl:"response,block"`
 
 	Plugins hcl.Body `hcl:",remain"`
+
+	seed int64
 }
 
-type response struct {
+type ResponseHTTP struct {
 	Status  string         `hcl:"status,label"`
 	Headers *headers       `hcl:"header,block"`
-	JWT     *jwtResponse   `hcl:"jwt,block"`
+	JWT     *responseJWT   `hcl:"jwt,block"`
 	Body    *hcl.Attribute `hcl:"body"`
 	PubKey  *string        `hcl:"hpkp"`
 }
 
-type jwtRequest struct {
+type routeCORS struct {
+	AllowOrigin      string   `hcl:"allow_origin,label"`
+	AllowMethods     []string `hcl:"allow_methods,optional"`
+	AllowHeaders     []string `hcl:"allow_headers,optional"`
+	MaxAge           *int     `hcl:"max_age"`
+	AllowCredentials *bool    `hcl:"Allow_Credentials"`
+}
+
+type requestJWT struct {
 	Name  string `hcl:"name,label"`
 	Input string `hcl:"input,label"`
 	Key   string `hcl:"key,label"`
 
 	Validate *bool  `hcl:"validate"`
 	Prefix   string `hcl:"prefix,optional"`
+
+	KeyVals map[string]*hcl.Attribute `hcl:",remain"` // key value pairs to match on
 }
 
-type jwtResponse struct {
+type responseJWT struct {
 	Name   string `hcl:"name,label"`
-	Key    string `hcl:"key,label"`
 	Output string `hcl:"output,label"`
+	Key    string `hcl:"key,label"`
 
 	Subject    *hcl.Attribute    `hcl:"sub" json:"sub"`
 	Issuers    *hcl.Attribute    `hcl:"iss" json:"iss"`
@@ -170,5 +188,10 @@ type jwtResponse struct {
 	AuthType   []string          `hcl:"auth_type,optional" json:"auth_type,optional"`
 	Payload    map[string]string `hcl:",remain"`
 
-	_hclVarMap map[string]map[string]cty.Value
+	_ctx *hcl.EvalContext
+}
+
+type routeProxy struct {
+	Name    string   `hcl:"name,label"`
+	Headers *headers `hcl:"headers,block"`
 }

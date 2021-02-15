@@ -72,7 +72,7 @@ type pubnubEmit struct {
 	Data    *hcl.Attribute `hcl:"data"`
 }
 
-func (p *pubnubPlugin) Setup(config *Config) (err error) {
+func (p *pubnubPlugin) Setup() (err error) {
 	log.Println("[pubnub] setup plugin ...")
 
 	p.client.conn = make(map[string]*pngo.PubNub)
@@ -80,64 +80,71 @@ func (p *pubnubPlugin) Setup(config *Config) (err error) {
 	p.config = make(map[string]pubnubConfig)
 	p.On = make(map[string]func(string, string, interface{}))
 
-	for _, svr := range config.Servers {
-		cfg := p.config[svr.Name]
+	return nil
+}
 
-		svrb, _, _ := svr.Plugins.PartialContent(&hcl.BodySchema{
-			Blocks: []hcl.BlockHeaderSchema{
-				{
-					Type:       pubnubPluginName,
-					LabelNames: []string{"name"},
-				},
+func (p *pubnubPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) (err error) {
+	cfg := p.config[svrName]
+
+	svrb, _, _ := svrPlugins.PartialContent(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{
+				Type:       pubnubPluginName,
+				LabelNames: []string{"name"},
 			},
-		})
+		},
+	})
 
-		if len(svrb.Blocks) == 0 {
-			continue
-		}
-
-		for _, block := range svrb.Blocks {
-			var pnc pubnubConfig
-			switch block.Type {
-			case pubnubPluginName:
-				gohcl.DecodeBody(block.Body, nil, &pnc)
-				if len(block.Labels) > 0 {
-					pnc.Name = block.Labels[0] // the same index as the LabelNames above...
-				}
-				p.config[svr.Name] = pnc
-				cfg = p.config[svr.Name]
-			}
-		}
-
-		if cfg.UUID == "" {
-			cfg.UUID = xid.New().String()
-			p.config[svr.Name] = cfg
-		}
-
-		publishKey, err := cfg.PublishKey.Expr.Value(&fileEvalCtx)
-		if err != nil {
-			return err
-		}
-
-		subscribeKey, err := cfg.SubscribeKey.Expr.Value(&fileEvalCtx)
-		if err != nil {
-			return err
-		}
-
-		var conf = pngo.NewConfig()
-		conf.PublishKey = publishKey.AsString()
-		conf.SubscribeKey = subscribeKey.AsString()
-		conf.UUID = p.config[svr.Name].UUID
-
-		p.client.conn[cfg.Name] = pngo.NewPubNub(conf)
-		p.client.channel[cfg.Name] = cfg.Channel
-
-		log.Printf("[pubnub] client %s (channel: %q uuid: %q) ...", cfg.Name, cfg.Channel, cfg.UUID)
+	if len(svrb.Blocks) == 0 {
+		return
 	}
 
-	listener := p.NewListener()
+	for _, block := range svrb.Blocks {
+		var pnc pubnubConfig
+		switch block.Type {
+		case pubnubPluginName:
+			gohcl.DecodeBody(block.Body, nil, &pnc)
+			if len(block.Labels) > 0 {
+				pnc.Name = block.Labels[0] // the same index as the LabelNames above...
+			}
+			p.config[svrName] = pnc
+			cfg = p.config[svrName]
+		}
+	}
 
-	cfgb, _, _ := config.Plugins.PartialContent(&hcl.BodySchema{
+	if cfg.UUID == "" {
+		cfg.UUID = xid.New().String()
+		p.config[svrName] = cfg
+	}
+
+	publishKey, err := cfg.PublishKey.Expr.Value(&fileEvalCtx)
+	if err != nil {
+		return err
+	}
+
+	subscribeKey, err := cfg.SubscribeKey.Expr.Value(&fileEvalCtx)
+	if err != nil {
+		return err
+	}
+
+	var conf = pngo.NewConfig()
+	conf.PublishKey = publishKey.AsString()
+	conf.SubscribeKey = subscribeKey.AsString()
+	conf.UUID = p.config[svrName].UUID
+
+	p.client.conn[cfg.Name] = pngo.NewPubNub(conf)
+	p.client.channel[cfg.Name] = cfg.Channel
+
+	log.Printf("[pubnub] client %s (channel: %q uuid: %q) ...", cfg.Name, cfg.Channel, cfg.UUID)
+
+	return nil
+}
+
+func (p *pubnubPlugin) SetupRoot(configPlugins hcl.Body) error {
+
+	var listener = p.NewListener()
+
+	cfgb, _, _ := configPlugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{
 				Type:       pubnubPluginName,
@@ -278,7 +285,7 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 	}
 }
 
-func (p *pubnubPlugin) Serve(r route, req request) (middleware, bool) {
+func (p *pubnubPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP, bool) {
 	reqb, _, _ := req.Plugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{
@@ -331,23 +338,23 @@ func (p *pubnubPlugin) Serve(r route, req request) (middleware, bool) {
 				}
 				for {
 					var x int64
-					var u string
+					var useTxt string
 					switch req.Order {
 					case "random":
-						u = `[pubnub] using "random" ...`
 						x = rand.Int63n(int64(len(resps) * 2))
+						useTxt = `using "random" ...`
 					case "unordered":
-						u = `[pubnub] using "unordered" ...`
 						x = atomic.AddInt64(&idx, 1)
 						if int(x)%len(resps) == 0 {
 							rand.Shuffle(len(resps), func(i, j int) { resps[i], resps[j] = resps[j], resps[i] })
 						}
+						useTxt = `using "unordered" ...`
 					default:
-						u = `[pubnub] using "ordered" ...`
 						x = atomic.AddInt64(&idx, 1)
+						useTxt = `using "ordered" ...`
 					}
 					if len(resps) > 1 {
-						log.Print(u)
+						log.Println("[pubnub]", useTxt)
 					}
 
 					log.Print(`[pubnub] collecting the response ...`)

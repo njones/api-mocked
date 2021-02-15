@@ -13,6 +13,7 @@ const (
 	ErrDecodeJWTResponse   StdError = "failed decoding JWT: %v"
 	ErrBadHCLExpression    StdError = "failed HCL eval of expression: %v"
 	ErrTemplateParse       StdError = "failed parsing template: %v"
+	ErrParseForm           StdError = "failed parsing the form: %v"
 	ErrParseInt            StdError = "failed parsing int to string: %v"
 	ErrParseDuration       StdError = "failed parsing time duration: %v"
 	ErrBigIntCreation      StdError = "failed creating a big number"
@@ -119,7 +120,7 @@ type Ext404Error struct{ error }
 
 func (e Ext404Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
 	http.Error(w, "404 page not found", http.StatusNotFound)
-	log.Println(e.error)
+	log.Error(e.error)
 	return true
 }
 
@@ -127,7 +128,7 @@ type Ext400Error struct{ error }
 
 func (e Ext400Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
 	http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-	log.Println(e.error)
+	log.Error(e.error)
 	return true
 }
 

@@ -40,7 +40,7 @@ var jwtSigMap = map[string]jwtgo.SigningMethod{
 	jwtgo.SigningMethodPS512.Name: jwtgo.SigningMethodPS512,
 }
 
-func useJWT(mw *chi.Mux, server serverConfig) {
+func useJWT(mw *chi.Mux, server ConfigHTTP) {
 	if server.JWT == nil {
 		return
 	}
@@ -100,7 +100,7 @@ func useJWT(mw *chi.Mux, server serverConfig) {
 
 }
 
-func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (token *jwtgo.Token, err error) {
+func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *requestJWT) (token *jwtgo.Token, err error) {
 	if reqJWT == nil {
 		return token, nil
 	}
@@ -122,6 +122,8 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (toke
 		jwtStr = cookie.Value
 	case "header":
 		jwtStr = r.Header.Get(reqJWT.Key)
+	case "query":
+		jwtStr = r.URL.Query().Get(reqJWT.Key)
 	default:
 		return nil, ErrInvalidJWTLoc.F("input")
 	}
@@ -166,18 +168,11 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *jwtRequest) (toke
 	return token, err
 }
 
-func encodeJWT(w http.ResponseWriter, claims *jwtResponse, cfg *jwtConfig, key interface{}) error {
-	if claims == nil {
-		return nil
-	}
-
-	log.Printf("[jwt] encode %s ...", claims.Output)
-
-	// add the validation key to the token (so this can't be used for production)
-	if cfg != nil {
+func marshalJWT(cfgJWT *configJWT, respJWT *responseJWT, key interface{}) (string, error) {
+	if cfgJWT != nil {
 		switch k := key.(type) {
 		case []byte:
-			claims.Payload["$._internal."+cfg.Name+".key"] = string(key.([]byte))
+			respJWT.Payload["$._internal."+cfgJWT.Name+".key"] = string(key.([]byte))
 		case *rsa.PrivateKey:
 			b := pem.EncodeToMemory(
 				&pem.Block{
@@ -185,39 +180,22 @@ func encodeJWT(w http.ResponseWriter, claims *jwtResponse, cfg *jwtConfig, key i
 					Bytes: x509.MarshalPKCS1PrivateKey(k),
 				},
 			)
-			claims.Payload["$._internal."+cfg.Name+".key"] = string(b)
+			respJWT.Payload["$._internal."+cfgJWT.Name+".key"] = string(b)
 		}
 	}
 
-	log.Println("[jwt] mint token ...")
-	if algo, ok := jwtSigMap[cfg.Alg]; ok {
-		token := jwtgo.NewWithClaims(algo, claims)
-		tokStr, err := token.SignedString(key)
-		if err != nil {
-			return err
-		}
-
-		switch claims.Output {
-		case "header":
-			w.Header().Add(claims.Key, tokStr)
-		case "cookie":
-			cookie := http.Cookie{
-				Name:  claims.Key,
-				Value: tokStr,
-			}
-			http.SetCookie(w, &cookie)
-		default:
-			fmt.Fprint(w, tokStr)
-		}
+	if algo, ok := jwtSigMap[cfgJWT.Alg]; ok {
+		token := jwtgo.NewWithClaims(algo, respJWT)
+		return token.SignedString(key)
 	}
 
-	return nil
+	return "", fmt.Errorf("no algo found")
 }
 
 // Makes sure that the claims are valid ...
 // this is taken from: https://github.com/dgrijalva/jwt-go/blob/dc14462fd58732591c7fa58cc8496d6824316a82/claims.go
 
-func useShortZeroValue(a *hcl.Attribute) {
+func useImpliedZeroIndex(a *hcl.Attribute) {
 	// this will set the index to 0 if a variable is ${post.<value>} ... it will make things right
 	// I tried serveral other ways, but this is the one that worked
 	vars := a.Expr.Variables()
@@ -236,7 +214,7 @@ func useShortZeroValue(a *hcl.Attribute) {
 	}
 }
 
-func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
+func (r *responseJWT) MarshalJSON() (b []byte, err error) {
 	var addComma bool
 	b = append(b, '{')
 
@@ -246,12 +224,12 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 			continue
 		}
 		if a, ok := val.Field(i).Interface().(*hcl.Attribute); ok && a != nil {
-			useShortZeroValue(a)
+			useImpliedZeroIndex(a)
 			if addComma {
 				b = append(b, ","...)
 			}
 			name := val.Type().Field(i).Tag.Get("json")
-			val, _ := a.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
+			val, _ := a.Expr.Value(r._ctx)
 			b = append(b, fmt.Sprintf("%q:", name)...)
 			switch vt := val.Type(); vt {
 			case cty.String:
@@ -262,8 +240,6 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 			case cty.Bool:
 				b = append(b, fmt.Sprintf("%t", val.True())...)
 			default:
-				log.Printf("l: %#v", a.Expr)
-				log.Printf("r.key: %q r.name: %q name: %q type: %#v", r.Key, r.Name, name, vt)
 				b = append(b, `""`...) // just let it be empty
 			}
 			addComma = true
@@ -292,15 +268,15 @@ func (r *jwtResponse) MarshalJSON() (b []byte, err error) {
 	return append(b, '}'), nil
 }
 
-func (r *jwtResponse) Valid() error {
+func (r *responseJWT) Valid() error {
 	vErr := new(jwtgo.ValidationError)
 	now := jwtgo.TimeFunc().Unix()
 
 	// The claims below are optional, by default, so if they are set to the
 	// default value in Go, let's not fail the verification for them.
 	if r.VerifyExpiresAt(now, false) == false {
-		useShortZeroValue(r.Expiration)
-		num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
+		useImpliedZeroIndex(r.Expiration)
+		num, _ := r.Expiration.Expr.Value(r._ctx)
 		expiresAt, _ := num.AsBigFloat().Int64()
 		delta := time.Unix(now, 0).Sub(time.Unix(expiresAt, 0))
 		vErr.Inner = fmt.Errorf("token is expired by %v", delta)
@@ -326,41 +302,41 @@ func (r *jwtResponse) Valid() error {
 
 // Compares the aud claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
-func (r *jwtResponse) VerifyAudience(cmp string, req bool) bool {
+func (r *responseJWT) VerifyAudience(cmp string, req bool) bool {
 	aud, _ := r.Audience.Expr.Value(nil)
 	return verifyAud(aud.AsString(), cmp, req)
 }
 
 // Compares the exp claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
-func (r *jwtResponse) VerifyExpiresAt(cmp int64, req bool) bool {
-	useShortZeroValue(r.Expiration)
-	num, _ := r.Expiration.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
+func (r *responseJWT) VerifyExpiresAt(cmp int64, req bool) bool {
+	useImpliedZeroIndex(r.Expiration)
+	num, _ := r.Expiration.Expr.Value(r._ctx)
 	exp, _ := num.AsBigFloat().Int64()
 	return verifyExp(exp, cmp, req)
 }
 
 // Compares the iat claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
-func (r *jwtResponse) VerifyIssuedAt(cmp int64, req bool) bool {
-	useShortZeroValue(r.IssuedAt)
-	num, _ := r.IssuedAt.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
+func (r *responseJWT) VerifyIssuedAt(cmp int64, req bool) bool {
+	useImpliedZeroIndex(r.IssuedAt)
+	num, _ := r.IssuedAt.Expr.Value(r._ctx)
 	iat, _ := num.AsBigFloat().Int64()
 	return verifyIat(iat, cmp, req)
 }
 
 // Compares the iss claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
-func (r *jwtResponse) VerifyIssuer(cmp string, req bool) bool {
+func (r *responseJWT) VerifyIssuer(cmp string, req bool) bool {
 	iss, _ := r.Issuers.Expr.Value(nil)
 	return verifyIss(iss.AsString(), cmp, req)
 }
 
 // Compares the nbf claim against cmp.
 // If required is false, this method will return true if the value matches or is unset
-func (r *jwtResponse) VerifyNotBefore(cmp int64, req bool) bool {
-	useShortZeroValue(r.NotBefore)
-	num, _ := r.NotBefore.Expr.Value(jwtEvalCtx(r.Name, r.Key, r._hclVarMap))
+func (r *responseJWT) VerifyNotBefore(cmp int64, req bool) bool {
+	useImpliedZeroIndex(r.NotBefore)
+	num, _ := r.NotBefore.Expr.Value(r._ctx)
 	nbf, _ := num.AsBigFloat().Int64()
 	return verifyNbf(nbf, cmp, req)
 }

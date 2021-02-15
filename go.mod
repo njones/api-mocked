@@ -12,6 +12,7 @@ require (
 	github.com/google/uuid v1.1.2 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/hashicorp/hcl/v2 v2.7.0
+	github.com/jaswdr/faker v1.3.0
 	github.com/njones/logger v1.0.8
 	github.com/pubnub/go v4.10.0+incompatible
 	github.com/rs/xid v1.2.1

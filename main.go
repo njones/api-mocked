@@ -3,11 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"plugin"
 	"runtime/debug"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsimple"
 	"github.com/njones/logger"
 	"github.com/spf13/afero"
@@ -15,6 +18,12 @@ import (
 
 var _cfgFileLoadPath string
 var log = logger.New(logger.WithTimeFormat("2006/01/02 15:04:05 -"))
+
+type Plugin interface {
+	Setup() error
+	SetupRoot(hcl.Body) error
+	SetupConfig(string, hcl.Body) error // can be called multiple times
+}
 
 func main() {
 	var configFile, logDir string
@@ -63,7 +72,7 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 				}
 			}()
 		}
-	}(true)
+	}(false)
 
 	if config.System != nil && config.System.LogDir != nil {
 		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
@@ -93,6 +102,47 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 			config.Servers, config.Routes = mgr.get() // add the old copy back
 		}
 		mgr.del() // remove old copy
+
+		// setup any external plugin
+		files, err := ioutil.ReadDir("./plugins/obj")
+		if err != nil {
+			log.Fatalf("cannot read plugin dir: %v", err)
+		}
+
+		for _, f := range files {
+			ext, err := plugin.Open("./plugins/obj/" + f.Name())
+			if err != nil {
+				log.Fatalf("cannot load external plugins: %v", err)
+			}
+
+			setup, err := ext.Lookup("SetupPluginExt")
+			if err != nil {
+				log.Fatalf("cannot lookup setup for plugin: %s %v", f.Name(), err)
+			}
+
+			log.Printf("[init] loading external plugin %s ...", f.Name())
+			pluginName, pluginNew := setup.(func() (string, interface{}))()
+			if plug, ok := pluginNew.(interface{ WithLogger(logger.Logger) }); ok {
+				plug.WithLogger(log)
+			}
+			plugins[pluginName] = pluginNew.(Plugin)
+		}
+
+		// setup any internal plugin
+		for name, plugin := range plugins {
+			log.Printf("[plugin] root init %v", name)
+			if err := plugin.Setup(); err != nil {
+				log.Println("[setup] init plugin err: %v", err)
+			}
+			if err := plugin.SetupRoot(config.Plugins); err != nil {
+				log.Println("[setup] root plugin err: %v", err)
+			}
+			for _, svr := range config.Servers {
+				if err := plugin.SetupConfig(svr.Name, svr.Plugins); err != nil {
+					log.Println("[setup] root plugin err: %v", err)
+				}
+			}
+		}
 
 		// run all of the servers (usually HTTP(s))
 		shutdown := _http(&config)

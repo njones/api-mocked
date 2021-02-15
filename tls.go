@@ -28,7 +28,7 @@ var (
 	DefaultACMEEmail = "example@example.com"
 )
 
-func useTLS(mw *chi.Mux, server serverConfig) *tls.Config {
+func useTLS(mw *chi.Mux, server ConfigHTTP) *tls.Config {
 	if server.SSL == nil {
 		log.Printf("[tls] %q no certs loaded (using HTTP) ...", server.Name)
 		return nil
