@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"plugin"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -26,10 +27,11 @@ type Plugin interface {
 }
 
 func main() {
-	var configFile, logDir string
+	var configFile, logDir, pluginDir string
 
 	flag.StringVar(&configFile, "config", "cfg/config.hcl", "the path to the config file")
 	flag.StringVar(&logDir, "log-dir", "log", "the path to the log directory")
+	flag.StringVar(&pluginDir, "plugin-dir", "./plugins/obj", "the path to where .so plugins are stored")
 
 	flag.Parse()
 
@@ -41,12 +43,14 @@ func main() {
 	// all config files will be at this path
 	_cfgFileLoadPath = filepath.Dir(flp)
 
-	log.Println(run(configFile, logDir))
+	log.Println(run(configFile, logDir, pluginDir))
 }
 
 type RunOptions func(*Config)
 
-func run(configFile string, logDir string, opts ...RunOptions) string {
+func run(configFile string, logDir string, pluginDir string, opts ...RunOptions) string {
+	pluginDir = strings.TrimSuffix(pluginDir, "/") + "/" // always end with a "/"
+
 	var config Config
 
 	config.internal.os = afero.NewOsFs()
@@ -104,13 +108,13 @@ func run(configFile string, logDir string, opts ...RunOptions) string {
 		mgr.del() // remove old copy
 
 		// setup any external plugin
-		files, err := ioutil.ReadDir("./plugins/obj")
+		files, err := ioutil.ReadDir(pluginDir)
 		if err != nil {
 			log.Fatalf("cannot read plugin dir: %v", err)
 		}
 
 		for _, f := range files {
-			ext, err := plugin.Open("./plugins/obj/" + f.Name())
+			ext, err := plugin.Open(pluginDir + f.Name())
 			if err != nil {
 				log.Fatalf("cannot load external plugins: %v", err)
 			}

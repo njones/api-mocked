@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/spf13/afero"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type serviceControl struct {
@@ -55,8 +56,10 @@ type system struct {
 	LogDir *string `hcl:"log_dir"` // the name of the directory to save reload logs to
 }
 
+type headerData map[string][]cty.Value
+
 type headers struct {
-	Data map[string][]string `hcl:",remain"`
+	Data headerData `hcl:",remain"`
 }
 
 type ConfigHTTP struct {

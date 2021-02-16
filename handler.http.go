@@ -66,6 +66,27 @@ func respOrderHTTP(idx *uint64, resps []ResponseHTTP, orderType string) (Respons
 	return resps[int(x)%len(resps)], true
 }
 
+var interval = map[string]time.Duration{
+	"ns": time.Nanosecond,
+	"ms": time.Millisecond,
+	"µs": time.Microsecond,
+	"s":  time.Second,
+	"m":  time.Minute,
+	"h":  time.Hour,
+}
+
+func delay(str string) time.Duration {
+	var n int
+	var i string
+	if x, _ := fmt.Sscanf(str, "%d%s", &n, &i); x > 0 {
+		if d, ok := interval[i]; ok {
+			return time.Duration(n) * d
+		}
+	}
+
+	return time.Duration(0)
+}
+
 func useProxy(proxy *configProxy, w http.ResponseWriter, r *http.Request, headers *headers) error {
 	// create the reverse proxy
 	xy := httputil.NewSingleHostReverseProxy(proxy._url)
@@ -75,14 +96,16 @@ func useProxy(proxy *configProxy, w http.ResponseWriter, r *http.Request, header
 	if headers != nil {
 		for k, vals := range headers.Data {
 			for _, val := range vals {
-				r.Header.Set(k, val)
+				//v, _ := val.Expr.Value(nil)
+				r.Header.Set(k, val.AsString())
 			}
 		}
 	}
 	if proxy.Headers != nil {
 		for k, vals := range proxy.Headers.Data {
 			for _, val := range vals {
-				r.Header.Set(k, val)
+				//v, _ := val.Expr.Value(nil)
+				r.Header.Set(k, val.AsString())
 			}
 		}
 	}
@@ -141,8 +164,10 @@ func httpHandler(req RequestHTTP) http.HandlerFunc {
 			for key, vals := range req.Headers.Data {
 				values := r.Header.Values(key)
 				for _, val := range vals {
+					//vv, _ := val.Expr.Value(nil)
+
 					for _, v := range values {
-						if val == "*" || v == val {
+						if val.AsString() == "*" || v == val.AsString() {
 							matchLength--
 							break
 						}
@@ -263,7 +288,8 @@ func httpHandler(req RequestHTTP) http.HandlerFunc {
 		if resp.Headers != nil {
 			for key, vals := range resp.Headers.Data {
 				for _, val := range vals {
-					w.Header().Add(key, val)
+					//v, _ := val.Expr.Value(nil)
+					w.Header().Add(key, val.AsString())
 				}
 			}
 		}

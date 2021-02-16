@@ -53,7 +53,7 @@ type testHTTP struct {
 		validation string
 		statusCode int
 		body       string
-		header     http.Header
+		header     headerData
 	}
 }
 
@@ -118,19 +118,25 @@ func test(t *testing.T, name string, opts ...testOpt) testHTTP {
 	return resp
 }
 
+func headerVal(s string) cty.Value {
+	return cty.StringVal(s)
+}
+
 // reqHeader enter k, v ... k, v and it will return the map
-func reqHeader(kvs ...string) map[string][]string {
-	rtn := make(map[string][]string)
+func reqHeader(kvs ...string) headerData {
+	rtn := make(headerData)
 	for i, v := range kvs {
 		if i%2 == 1 {
 			k := kvs[i-1]
 			if _, ok := rtn[k]; ok {
-				// rtn[k] = append(rtn[k], attr(v))
-				rtn[k] = append(rtn[k], v)
+				rtn[k] = append(rtn[k], headerVal(v))
+				//rtn[k] = append(rtn[k], attr(v))
+				//rtn[k] = append(rtn[k], v)
 				continue
 			}
-			// rtn[k] = []*hcl.Attribute{attr(v)}
-			rtn[k] = []string{v}
+			rtn[k] = []cty.Value{headerVal(v)}
+			//rtn[k] = []*hcl.Attribute{attr(v)}
+			//rtn[k] = []string{v}
 		}
 	}
 	return rtn
@@ -152,11 +158,12 @@ func testPath(path string) testOpt {
 	}
 }
 
-func testPost(m map[string][]string) testOpt {
+func testPost(m headerData) testOpt {
 	var q = new(url.URL).Query()
 	for k, vs := range m {
-		for _, v := range vs {
-			q.Add(k, v)
+		for _, val := range vs {
+			//v, _ := val.Expr.Value(nil)
+			q.Add(k, val.AsString())
 		}
 	}
 	return func(tr *testHTTP) {
@@ -170,7 +177,7 @@ func testURL(url string) testOpt {
 	}
 }
 
-func testHeaders(httpHeader http.Header, reqHeader map[string][]string) testOpt {
+func testHeaders(httpHeader http.Header, reqHeader headerData) testOpt {
 	return func(tr *testHTTP) {
 		tr.config.req.Headers = &headers{Data: reqHeader}
 		tr.http.headers = httpHeader
@@ -200,7 +207,7 @@ func testResponse(responses ...ResponseHTTP) testOpt {
 	}
 }
 
-func testResponseHeaders(m ...map[string][]string) testOpt {
+func testResponseHeaders(m ...headerData) testOpt {
 	return func(tr *testHTTP) {
 		for i, v := range m {
 			tr.config.req.Response[i].Headers = &headers{Data: v}
@@ -215,9 +222,9 @@ func testWant(status int, body string) testOpt {
 	}
 }
 
-func testWantHeaders(m map[string][]string) testOpt {
+func testWantHeaders(m headerData) testOpt {
 	return func(tr *testHTTP) {
-		tr.want.header = http.Header(m)
+		tr.want.header = m
 	}
 }
 
@@ -480,7 +487,12 @@ func TestRequestHandler(t *testing.T) {
 					t.Errorf("\nhave: %#v\nwant: %#v", have, test.want.header)
 				}
 
-				for k, want := range test.want.header {
+				for k, wantA := range test.want.header {
+					want := make([]string, len(wantA))
+					for i, val := range wantA {
+						//v, _ := val.Expr.Value(nil)
+						want[i] = val.AsString()
+					}
 					if !reflect.DeepEqual(want, have.Values(k)) {
 						t.Errorf("\nhave: %#v\nwant: %#v", have.Values(k), want)
 					}
@@ -753,6 +765,8 @@ func TestResponseOrder(t *testing.T) {
 				}
 
 				if iHave == len(test.want.body2) {
+					t.Log(haveBody)
+					t.Log(test.want.body2)
 					t.Errorf(`have: "ordered" want: "unordered"`)
 				}
 
@@ -1040,8 +1054,8 @@ func TestProxyHandler(t *testing.T) {
 			cfgPxy: configProxy{
 				Name: "test1",
 				Headers: &headers{
-					Data: map[string][]string{
-						"x-from-config": {"abc-123"},
+					Data: headerData{
+						"x-from-config": {headerVal("abc-123")},
 					},
 				},
 				_url: u,
@@ -1069,8 +1083,8 @@ func TestProxyHandler(t *testing.T) {
 					{
 						Status: "test1",
 						Headers: &headers{
-							Data: map[string][]string{
-								"x-from-request": {"xyz-789"},
+							Data: headerData{
+								"x-from-request": {headerVal("xyz-789")},
 							},
 						},
 					},
@@ -1084,8 +1098,8 @@ func TestProxyHandler(t *testing.T) {
 			cfgPxy: configProxy{
 				Name: "test1",
 				Headers: &headers{
-					Data: map[string][]string{
-						"x-from-config": {"abc-123"},
+					Data: headerData{
+						"x-from-config": {headerVal("abc-123")},
 					},
 				},
 				_url: u,
@@ -1096,8 +1110,8 @@ func TestProxyHandler(t *testing.T) {
 					{
 						Status: "test1",
 						Headers: &headers{
-							Data: map[string][]string{
-								"x-from-request": {"xyz-789"},
+							Data: headerData{
+								"x-from-request": {headerVal("xyz-789")},
 							},
 						},
 					},
@@ -1119,7 +1133,12 @@ func TestProxyHandler(t *testing.T) {
 				var reqHeaders int
 				if test.cfgPxy.Headers != nil && len(test.cfgPxy.Headers.Data) > 0 {
 					cfgHeaders = len(test.cfgPxy.Headers.Data)
-					for k, ws := range test.cfgPxy.Headers.Data { // have
+					for k, wAs := range test.cfgPxy.Headers.Data { // have
+						var ws = make([]string, len(wAs))
+						for i, val := range wAs {
+							//v, _ := val.Expr.Value(nil)
+							ws[i] = val.AsString()
+						}
 						hs := hdr.Values(k) // want
 						if !reflect.DeepEqual(hs, ws) {
 							t.Errorf("[cfg-header] have: %s:%v want: %s:%v", k, hs, k, ws)
@@ -1131,7 +1150,12 @@ func TestProxyHandler(t *testing.T) {
 					test.req.Response[respIdx].Headers != nil &&
 					len(test.req.Response[respIdx].Headers.Data) > 0 {
 					reqHeaders = len(test.req.Response[respIdx].Headers.Data)
-					for k, ws := range test.req.Response[respIdx].Headers.Data { // have
+					for k, wAs := range test.req.Response[respIdx].Headers.Data { // have
+						var ws = make([]string, len(wAs))
+						for i, val := range wAs {
+							//v, _ := val.Expr.Value(nil)
+							ws[i] = val.AsString()
+						}
 						hs := hdr.Values(k) // want
 						if !reflect.DeepEqual(hs, ws) {
 							t.Errorf("[req-header] have: %s:%v want: %s:%v", k, hs, k, ws)
