@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	jwtgo "github.com/dgrijalva/jwt-go"
 	"github.com/go-chi/chi"
 )
 
@@ -22,8 +21,8 @@ type PluginHTTP interface {
 	MiddlewareHTTP(Route, RequestHTTP) (MiddlewareHTTP, bool)
 }
 
-const JWTTokenCtxKey ctxKey = "_jwt_token_"
-const UseProxyCtxKey ctxKey = "_use_proxy_name_"
+const CtxKeyJWTToken ctxKey = "_jwt_token_"
+const CtxKeyUseProxy ctxKey = "_use_proxy_name_"
 
 func _http(config *Config) chan struct{} {
 
@@ -50,61 +49,27 @@ func _http(config *Config) chan struct{} {
 		// add http response routes
 		for _, req := range route.Request {
 			for _, method := range strings.Split(req.Method, "|") {
-				method = strings.TrimSpace(method)
+				method = strings.ToUpper(strings.TrimSpace(method))
 				var midware chi.Middlewares
 
 				// add any method middleware
 
 				// check for JWT authorization
 				if req.JWT != nil {
-					midware = append(midware, func(next http.Handler) http.Handler {
-						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-							// req.JWT need to have the sigCtxKey already in the context
-							token, err := decodeJWT(w, r, req.JWT)
-							if err != nil {
-								http.Error(w, err.Error(), 401)
-								return
-							}
-
-							// go through the claims and see if the strings match
-							if mc, ok := token.Claims.(jwtgo.MapClaims); ok {
-								for k, v := range mc {
-									if reqv, ok := req.JWT.KeyVals[k]; ok {
-										if v1, ok := v.(string); ok {
-											v2, _ := reqv.Expr.Value(nil)
-											if v1 != v2.AsString() {
-												ro.NotFoundHandler().ServeHTTP(w, r)
-												return
-											}
-										}
-									}
-								}
-							}
-
-							ctx := r.Context()
-							ctx = context.WithValue(ctx, JWTTokenCtxKey, token)
-							next.ServeHTTP(w, r.WithContext(ctx))
-						})
-					})
+					log.Printf("[http] %s JWT filter middleware added ...", route.Path)
+					midware = append(midware, checkRequestJWT(req, ro.NotFoundHandler()))
 				}
 
 				// check for POST values
-				if strings.ToUpper(method) == http.MethodPost {
-					midware = append(midware, func(next http.Handler) http.Handler {
-						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-							for k, v := range req.Posted {
-								if v == "*" {
-									continue
-								}
-								if v != r.PostFormValue(k) {
-									ro.NotFoundHandler().ServeHTTP(w, r)
-									return
-								}
-							}
-							next.ServeHTTP(w, r)
-						})
-					})
+				if method == http.MethodPost {
+					log.Printf("[http] %s POST filter middleware added ...", route.Path)
+					midware = append(midware, checkRequestPost(req, ro.NotFoundHandler()))
+				}
+
+				// check for header values
+				if req.Headers != nil {
+					log.Printf("[http] %s header filter middleware added ...", route.Path)
+					midware = append(midware, checkRequestHeader(req, ro.NotFoundHandler()))
 				}
 
 				// add any plugin middleware
@@ -125,10 +90,11 @@ func _http(config *Config) chan struct{} {
 
 				if route.Proxy != nil {
 					pxy := route.Proxy // capture for the closure...
+					log.Printf("[http] proxy for %s added ...", route.Path)
 					midware = append(midware, func(next http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							if proxy, ok := r.Context().Value(ctxKey(pxy.Name)).(*configProxy); ok {
-								useProxy(proxy, w, r, pxy.Headers) // async call
+								useProxy(w, r, proxy, pxy.Headers) // async call
 								return
 							}
 						})
@@ -203,10 +169,10 @@ func _http(config *Config) chan struct{} {
 		r := chi.NewRouter() // a place where we can combine middleware and routes
 
 		tlsConfig := useTLS(r, server) // Getting our TLS status for each server
-		useJWT(r, server)
 
 		// check if we should limit this server to only HTTP2 requests
 		if server.HTTP2 {
+			log.Printf("[http2] %q is restricted to only HTTP/2 requests ...", server.Name)
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if _, ok := w.(http.Pusher); !ok {
@@ -218,6 +184,23 @@ func _http(config *Config) chan struct{} {
 			})
 		}
 
+		if server.BasicAuth != nil {
+			log.Printf("[basicAuth] %q middleware added ...", server.Name)
+			r.Use(checkBasicAuth(server, ro.NotFoundHandler()))
+		}
+
+		if server.JWT != nil {
+			log.Printf("[jwt] %q middleware added ...", server.Name)
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					ctx := context.WithValue(r.Context(), ctxKey(server.JWT.Name), server.JWT)
+					ctx = context.WithValue(ctx, sigCtxKey, useJWT(server))
+					next.ServeHTTP(w, r.WithContext(ctx))
+				})
+			})
+		}
+
+		// add server proxy configs
 		if server.Proxy != nil {
 			log.Printf("[proxy] %q add proxy %q lookup ...", server.Name, server.Proxy.Name)
 			urlParsed, err := url.Parse(server.Proxy.URL)

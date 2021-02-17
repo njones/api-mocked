@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rsa"
 	"crypto/subtle"
 	"crypto/x509"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	jwtgo "github.com/dgrijalva/jwt-go"
-	"github.com/go-chi/chi"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
@@ -40,13 +38,10 @@ var jwtSigMap = map[string]jwtgo.SigningMethod{
 	jwtgo.SigningMethodPS512.Name: jwtgo.SigningMethodPS512,
 }
 
-func useJWT(mw *chi.Mux, server ConfigHTTP) {
-	if server.JWT == nil {
-		return
-	}
+func useJWT(server ConfigHTTP) interface{} {
+	var sigKey interface{}
 
 	log.Printf("[jwt] %q setup (algo: %s) ...", server.Name, server.JWT.Alg)
-	var sigKey interface{}
 	switch strings.ToLower(server.JWT.Alg)[:2] {
 	case "hs":
 		if val, dia := server.JWT.Secret.Expr.Value(&fileEvalCtx); !dia.HasErrors() {
@@ -88,16 +83,7 @@ func useJWT(mw *chi.Mux, server ConfigHTTP) {
 		panic("[jwt] using a EdDSA key is unsupported")
 	}
 
-	log.Printf("[jwt] %q middleware added ...", server.Name)
-	mw.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := r.Context()
-			ctx = context.WithValue(ctx, ctxKey(server.JWT.Name), server.JWT)
-			ctx = context.WithValue(ctx, sigCtxKey, sigKey)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
-
+	return sigKey
 }
 
 func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *requestJWT) (token *jwtgo.Token, err error) {

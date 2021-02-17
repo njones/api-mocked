@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"net/http"
 	"net/url"
 	"time"
@@ -78,6 +79,7 @@ type ConfigHTTP struct {
 type configBA struct {
 	User string `hcl:"username,optional"`
 	Pass string `hcl:"password,optional"`
+	Relm string `hcl:"relm,optional"`
 }
 
 // JWT config options
@@ -146,6 +148,7 @@ type RequestHTTP struct {
 	Plugins hcl.Body `hcl:",remain"`
 
 	seed int64
+	rand *rand.Rand
 }
 
 type ResponseHTTP struct {

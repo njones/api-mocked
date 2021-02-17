@@ -130,13 +130,9 @@ func reqHeader(kvs ...string) headerData {
 			k := kvs[i-1]
 			if _, ok := rtn[k]; ok {
 				rtn[k] = append(rtn[k], headerVal(v))
-				//rtn[k] = append(rtn[k], attr(v))
-				//rtn[k] = append(rtn[k], v)
 				continue
 			}
 			rtn[k] = []cty.Value{headerVal(v)}
-			//rtn[k] = []*hcl.Attribute{attr(v)}
-			//rtn[k] = []string{v}
 		}
 	}
 	return rtn
@@ -162,7 +158,6 @@ func testPost(m headerData) testOpt {
 	var q = new(url.URL).Query()
 	for k, vs := range m {
 		for _, val := range vs {
-			//v, _ := val.Expr.Value(nil)
 			q.Add(k, val.AsString())
 		}
 	}
@@ -426,7 +421,7 @@ func TestRequestHandler(t *testing.T) {
 			func(tr *testHTTP) {
 				var T = true
 				tr.config.req.JWT.Validate = &T
-				tr.want.validation = "invalid"
+				tr.want.validation = "invalid" // we should still pass even though invalid
 			},
 		),
 	}
@@ -461,6 +456,15 @@ func TestRequestHandler(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
+			if test.config.req.JWT != nil {
+				hdl.Use(checkRequestJWT(test.config.req, hdl.NotFoundHandler()))
+			}
+			if test.config.req.Headers != nil {
+				hdl.Use(checkRequestHeader(test.config.req, hdl.NotFoundHandler()))
+			}
+			if test.config.req.Posted != nil || strings.ToUpper(test.config.req.Method) == http.MethodPost {
+				hdl.Use(checkRequestPost(test.config.req, hdl.NotFoundHandler()))
+			}
 			hdl.Method(test.config.req.Method, test.config.path, httpHandler(test.config.req))
 			hdl.ServeHTTP(rec, req)
 
@@ -796,6 +800,111 @@ func TestResponseOrder(t *testing.T) {
 	}
 }
 
+func TestBasicAuth(t *testing.T) {
+	type want struct {
+		status int
+		body   string
+	}
+
+	var tests = []struct {
+		name        string
+		method      string
+		auth        string
+		username    string
+		password    string
+		user        string // expected
+		pass        string // expected
+		body        io.Reader
+		req         RequestHTTP
+		contentType string
+		want        want
+	}{
+		{
+			name:        "auth",
+			method:      "post",
+			body:        strings.NewReader("This is a test"),
+			auth:        "auth",
+			username:    "user",
+			password:    "password",
+			user:        "user",
+			pass:        "password",
+			contentType: "text/plain",
+			req: RequestHTTP{
+				Method: "post",
+				Response: []ResponseHTTP{
+					{
+						Body: attr("${request.body}"),
+					},
+				},
+			},
+			want: want{
+				status: 200,
+				body:   "This is a test",
+			},
+		},
+		{
+			name:     "bad auth",
+			method:   "post",
+			body:     strings.NewReader("This is a test"),
+			auth:     "auth",
+			username: "user",
+			password: "password-bad",
+			user:     "user",
+			pass:     "password",
+			req: RequestHTTP{
+				Method: "post",
+				Response: []ResponseHTTP{
+					{
+						Body: attr("${request.body}"),
+					},
+				},
+			},
+			want: want{
+				status: 401,
+				body:   "Unauthorized\n",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			req, err := http.NewRequest(strings.ToUpper(test.method), "/test", test.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if test.contentType == "" {
+				test.contentType = "application/x-www-form-urlencoded"
+			}
+			req.Header.Add("Content-Type", test.contentType)
+			req.SetBasicAuth(test.username, test.password)
+
+			rec := httptest.NewRecorder()
+			hdl := chi.NewRouter()
+
+			server := ConfigHTTP{
+				BasicAuth: &configBA{
+					User: test.user,
+					Pass: test.pass,
+				},
+			}
+
+			if strings.ToUpper(test.method) == http.MethodPost {
+				hdl.Use(checkRequestPost(test.req, hdl.NotFoundHandler()))
+			}
+			hdl.Use(checkBasicAuth(server, hdl.NotFoundHandler()))
+			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
+			hdl.ServeHTTP(rec, req)
+
+			haveBody := rec.Body.String()
+			if haveBody != test.want.body {
+				t.Errorf("have: %q want: %q", haveBody, test.want.body)
+			}
+		})
+	}
+}
+
 func TestJWTAuth(t *testing.T) {
 	tokenStr := getJWTTestToken(t)
 
@@ -821,6 +930,11 @@ func TestJWTAuth(t *testing.T) {
 			jwt:    tokenStr,
 			req: RequestHTTP{
 				Method: "post",
+				Response: []ResponseHTTP{
+					{
+						Body: attr("${request.body}"),
+					},
+				},
 			},
 			want: want{
 				status: 200,
@@ -839,9 +953,15 @@ func TestJWTAuth(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
+
+			hdl.Use(checkRequestPost(test.req, hdl.NotFoundHandler()))
 			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
 			hdl.ServeHTTP(rec, req)
 
+			haveBody := rec.Body.String()
+			if haveBody != test.want.body {
+				t.Errorf("have: %q want: %q", haveBody, test.want.body)
+			}
 		})
 	}
 }

@@ -11,6 +11,7 @@ const (
 	ErrHeaderMatchNotFound StdError = "failed match header not found"
 	ErrEncodeJWTResponse   StdError = "failed encoding JWT: %v"
 	ErrDecodeJWTResponse   StdError = "failed decoding JWT: %v"
+	ErrDecodeBase64        StdError = "failed decoding base64 content: %v"
 	ErrBadHCLExpression    StdError = "failed HCL eval of expression: %v"
 	ErrTemplateParse       StdError = "failed parsing template: %v"
 	ErrParseForm           StdError = "failed parsing the form: %v"
@@ -27,8 +28,14 @@ const (
 	ErrCreateTLSCert       StdError = "failed creating tls cert: %v"
 	ErrMarshalPrivKey      StdError = "failed marshaling private key: %v"
 	ErrMarshalPubKey       StdError = "failed marshaling public key: %v"
+	ErrOrderIndexParse     StdError = "failed parsing the order index to a valid number: %v"
+	ErrReadRequestBody     StdError = "failed reading the request body: %v"
+	ErrMarshalJWT          StdError = "failed parsing the JWT: %v"
 
-	ErrInvalidJWTLoc StdError = "invalid JWT %s location"
+	ErrJWTConfigurationNotFound StdError = "JWT configuration not found in the context"
+	ErrInvalidJWTClaim          StdError = "invalid JWT claim"
+	ErrInvalidJWTLoc            StdError = "invalid JWT %s location"
+	ErrInvalidAuth              StdError = "invalid authorization"
 )
 
 // StdError is a standard error.
@@ -68,6 +75,10 @@ func (e StdError) F(v ...interface{}) error {
 
 func (e StdError) F400(v ...interface{}) error {
 	return Ext400Error{e.F(v...).(ExtError)}
+}
+
+func (e StdError) F401(v ...interface{}) error {
+	return Ext401Error{e.F(v...).(ExtError)}
 }
 
 func (e StdError) F404(v ...interface{}) error {
@@ -116,18 +127,26 @@ func WriteError(h HandlerE) http.HandlerFunc {
 	}
 }
 
-type Ext404Error struct{ error }
-
-func (e Ext404Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
-	http.Error(w, "404 page not found", http.StatusNotFound)
-	log.Error(e.error)
-	return true
-}
-
 type Ext400Error struct{ error }
 
 func (e Ext400Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
 	http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	log.Error(e.error)
+	return true
+}
+
+type Ext401Error struct{ error }
+
+func (e Ext401Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
+	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+	log.Error(e.error)
+	return true
+}
+
+type Ext404Error struct{ error }
+
+func (e Ext404Error) ErrorResponseWriter(w http.ResponseWriter, r *http.Request) bool {
+	http.Error(w, "404 page not found", http.StatusNotFound)
 	log.Error(e.error)
 	return true
 }
