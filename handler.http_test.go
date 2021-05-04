@@ -239,6 +239,8 @@ func testJWTSecret(secret interface{}) testOpt {
 type testPluginData struct{}
 
 func (testPluginData) Setup() error                       { return nil }
+func (testPluginData) Version(int32) int32                { return 0 }
+func (testPluginData) Metadata() string                   { return "" }
 func (testPluginData) SetupRoot(hcl.Body) error           { return nil }
 func (testPluginData) SetupConfig(string, hcl.Body) error { return nil }
 
@@ -255,6 +257,19 @@ func (testPluginData) Variables() map[string]cty.Value {
 func (testPluginData) Functions() map[string]function.Function {
 	return map[string]function.Function{
 		"test_plugin_to_hex_func": function.New(&function.Spec{
+			Params: []function.Parameter{
+				{
+					Name: "string",
+					Type: cty.String,
+				},
+			},
+			Type: function.StaticReturnType(cty.String),
+			Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+
+				return cty.StringVal(hex.EncodeToString([]byte(args[0].AsString()))), nil
+			},
+		}),
+		"my-test-hex": function.New(&function.Spec{
 			Params: []function.Parameter{
 				{
 					Name: "string",
@@ -450,7 +465,7 @@ func TestRequestHandler(t *testing.T) {
 				case "header":
 					req.Header.Set(test.config.req.JWT.Key, test.http.jwt.token)
 				}
-				ctx := context.WithValue(req.Context(), sigCtxKey, test.config.jwt.secret)
+				ctx := context.WithValue(req.Context(), CtxKeySignature, test.config.jwt.secret)
 				req = req.WithContext(ctx)
 			}
 
@@ -465,7 +480,7 @@ func TestRequestHandler(t *testing.T) {
 			if test.config.req.Posted != nil || strings.ToUpper(test.config.req.Method) == http.MethodPost {
 				hdl.Use(checkRequestPost(test.config.req, hdl.NotFoundHandler()))
 			}
-			hdl.Method(test.config.req.Method, test.config.path, httpHandler(test.config.req))
+			hdl.Method(test.config.req.Method, test.config.path, httpHandler(test.config.req, []TextBlock{}))
 			hdl.ServeHTTP(rec, req)
 
 			if rec.Code != test.want.statusCode {
@@ -525,6 +540,13 @@ func TestRequestHandlerPlugins(t *testing.T) {
 			}),
 			testWant(200, "Hello, 576f726c64"),
 		),
+		test(t, "plugin function with dash",
+			testPlugin(),
+			testResponse(ResponseHTTP{
+				Status: "200", Body: attr(`Hello, ${my-test-hex("World")}`),
+			}),
+			testWant(200, "Hello, 576f726c64"),
+		),
 	}
 
 	for _, test := range tests {
@@ -551,13 +573,13 @@ func TestRequestHandlerPlugins(t *testing.T) {
 				case "header":
 					req.Header.Set(test.config.req.JWT.Key, test.http.jwt.token)
 				}
-				ctx := context.WithValue(req.Context(), sigCtxKey, test.config.jwt.secret)
+				ctx := context.WithValue(req.Context(), CtxKeySignature, test.config.jwt.secret)
 				req = req.WithContext(ctx)
 			}
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
-			hdl.Method(test.config.req.Method, test.config.path, httpHandler(test.config.req))
+			hdl.Method(test.config.req.Method, test.config.path, httpHandler(test.config.req, []TextBlock{}))
 			hdl.ServeHTTP(rec, req)
 
 			if rec.Code != test.want.statusCode {
@@ -714,7 +736,7 @@ func TestResponseOrder(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
-			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
+			hdl.Method(test.req.Method, "/test", httpHandler(test.req, []TextBlock{}))
 
 			var haveStatus []int
 			var haveBody []string
@@ -894,7 +916,7 @@ func TestBasicAuth(t *testing.T) {
 				hdl.Use(checkRequestPost(test.req, hdl.NotFoundHandler()))
 			}
 			hdl.Use(checkBasicAuth(server, hdl.NotFoundHandler()))
-			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
+			hdl.Method(test.req.Method, "/test", httpHandler(test.req, []TextBlock{}))
 			hdl.ServeHTTP(rec, req)
 
 			haveBody := rec.Body.String()
@@ -955,7 +977,7 @@ func TestJWTAuth(t *testing.T) {
 			hdl := chi.NewRouter()
 
 			hdl.Use(checkRequestPost(test.req, hdl.NotFoundHandler()))
-			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
+			hdl.Method(test.req.Method, "/test", httpHandler(test.req, []TextBlock{}))
 			hdl.ServeHTTP(rec, req)
 
 			haveBody := rec.Body.String()
@@ -1071,12 +1093,12 @@ func TestJWTResponse(t *testing.T) {
 				},
 			}
 
-			ctx := context.WithValue(req.Context(), sigCtxKey, []byte("Password/Secret"))
+			ctx := context.WithValue(req.Context(), CtxKeySignature, []byte("Password/Secret"))
 			ctx = context.WithValue(ctx, ctxKey("test-1"), &test.jwtC)
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
-			hdl.Method(test.method, "/test", httpHandler(reqq))
+			hdl.Method(test.method, "/test", httpHandler(reqq, []TextBlock{}))
 			hdl.ServeHTTP(rec, req.WithContext(ctx))
 
 			if test.want.body != nil {
@@ -1299,7 +1321,7 @@ func TestProxyHandler(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			hdl := chi.NewRouter()
-			hdl.Method(test.req.Method, "/test", httpHandler(test.req))
+			hdl.Method(test.req.Method, "/test", httpHandler(test.req, []TextBlock{}))
 			hdl.ServeHTTP(rec, req.WithContext(ctx))
 
 			have := rec.Body.String()

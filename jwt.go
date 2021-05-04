@@ -18,8 +18,15 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-var sigCtxKey = ctxKey("_sig_")
+// context keys for JWT token information that's stored
+// in a context during a request
+const (
+	CtxKeyJWTToken  ctxKey = "_jwt_token_" // the parsed JWT token
+	CtxKeySignature ctxKey = "_sig_"       // the secret bytes (HMAC bytes or RSA bytes)
+)
 
+// jwtSigMap a map of supported JWT signature types with the methods
+// needed to support signing/validating a JWT token
 var jwtSigMap = map[string]jwtgo.SigningMethod{
 	jwtgo.SigningMethodHS256.Name: jwtgo.SigningMethodHS256,
 	jwtgo.SigningMethodHS384.Name: jwtgo.SigningMethodHS384,
@@ -38,6 +45,8 @@ var jwtSigMap = map[string]jwtgo.SigningMethod{
 	jwtgo.SigningMethodPS512.Name: jwtgo.SigningMethodPS512,
 }
 
+// useJWT sets up a JWT token based off the configuration supplied
+// by the ConfigHTTP options
 func useJWT(server ConfigHTTP) interface{} {
 	var sigKey interface{}
 
@@ -86,6 +95,11 @@ func useJWT(server ConfigHTTP) interface{} {
 	return sigKey
 }
 
+// decodeJWT is called during the HTTP request to decode and validate a
+// JWT token. This takes the writer to set headers if the config determines
+// it takes the request to pull out headers, cookies or query values if
+// deteremined by config. It returns any errors and the token marked as valid
+// or invalid.
 func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *requestJWT) (token *jwtgo.Token, err error) {
 	if reqJWT == nil {
 		return token, nil
@@ -118,7 +132,7 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *requestJWT) (toke
 		log.Println("[jwt] parsing JWT token ...")
 		claims := jwtgo.MapClaims{}
 		token, err = jwtgo.ParseWithClaims(jwtStr, claims, func(token *jwtgo.Token) (interface{}, error) {
-			key := r.Context().Value(sigCtxKey)
+			key := r.Context().Value(CtxKeySignature)
 			switch k := key.(type) {
 			case []byte:
 				return k, nil
@@ -154,6 +168,8 @@ func decodeJWT(w http.ResponseWriter, r *http.Request, reqJWT *requestJWT) (toke
 	return token, err
 }
 
+// marshalJWT takes a JWT response struct and returns a JWT string with all
+// of the values passed though HCL contexts
 func marshalJWT(cfgJWT *configJWT, respJWT *responseJWT, key interface{}) (string, error) {
 	if cfgJWT != nil {
 		switch k := key.(type) {
@@ -181,6 +197,8 @@ func marshalJWT(cfgJWT *configJWT, respJWT *responseJWT, key interface{}) (strin
 // Makes sure that the claims are valid ...
 // this is taken from: https://github.com/dgrijalva/jwt-go/blob/dc14462fd58732591c7fa58cc8496d6824316a82/claims.go
 
+// useImpliedZeroIndex returns a 0-index for variables that require an index, but don't have one specified
+// this to to make variables natural to use.
 func useImpliedZeroIndex(a *hcl.Attribute) {
 	// this will set the index to 0 if a variable is ${post.<value>} ... it will make things right
 	// I tried serveral other ways, but this is the one that worked
@@ -200,6 +218,8 @@ func useImpliedZeroIndex(a *hcl.Attribute) {
 	}
 }
 
+// MarshalJSON provides a marshal state for the request JSON. this builds
+// the string manually from scratch and resolves all context issues.
 func (r *responseJWT) MarshalJSON() (b []byte, err error) {
 	var addComma bool
 	b = append(b, '{')
@@ -254,6 +274,8 @@ func (r *responseJWT) MarshalJSON() (b []byte, err error) {
 	return append(b, '}'), nil
 }
 
+// Valid statisfys the `*jwt.Claims` interface so we can map values
+// to this struct as raw JWT token data
 func (r *responseJWT) Valid() error {
 	vErr := new(jwtgo.ValidationError)
 	now := jwtgo.TimeFunc().Unix()
@@ -327,7 +349,7 @@ func (r *responseJWT) VerifyNotBefore(cmp int64, req bool) bool {
 	return verifyNbf(nbf, cmp, req)
 }
 
-// ----- helpers
+// ----- helpers (picked up from the JWT library)
 
 func verifyAud(aud string, cmp string, required bool) bool {
 	if aud == "" {
@@ -335,9 +357,8 @@ func verifyAud(aud string, cmp string, required bool) bool {
 	}
 	if subtle.ConstantTimeCompare([]byte(aud), []byte(cmp)) != 0 {
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 func verifyExp(exp int64, now int64, required bool) bool {
@@ -360,9 +381,8 @@ func verifyIss(iss string, cmp string, required bool) bool {
 	}
 	if subtle.ConstantTimeCompare([]byte(iss), []byte(cmp)) != 0 {
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 func verifyNbf(nbf int64, now int64, required bool) bool {

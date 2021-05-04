@@ -11,10 +11,13 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// serviceControl controls stopping and starting HTTP services
 type serviceControl struct {
 	reload, shutdown chan struct{}
 }
 
+// reloadDrain is called when shutting down all of the running
+// services. This sends a stop to gracefully stop them all.
 func (sc serviceControl) reloadDrain(shutdown chan struct{}) {
 	for {
 		select {
@@ -28,8 +31,8 @@ func (sc serviceControl) reloadDrain(shutdown chan struct{}) {
 // Config holds all of the configuration options of the MockServer
 type Config struct {
 	internal struct {
-		os   afero.Fs
-		file string
+		os    afero.Fs
+		files []string
 
 		svrStart        time.Time
 		svrCfgLoad      time.Time
@@ -41,7 +44,8 @@ type Config struct {
 	System  *system      `hcl:"system,block"`
 	Servers []ConfigHTTP `hcl:"http,block"`
 
-	Routes []Route `hcl:"path,block"`
+	Routes []Route     `hcl:"path,block"`
+	Texts  []TextBlock `hcl:"text,block"`
 
 	NotFound *struct {
 		Response ResponseHTTP `hcl:"response,block"`
@@ -53,16 +57,20 @@ type Config struct {
 	Plugins hcl.Body `hcl:",remain"`
 }
 
+// system holds all of the internal system dependent configs
 type system struct {
 	LogDir *string `hcl:"log_dir"` // the name of the directory to save reload logs to
 }
 
+// headerData is the type used for storing header KV data
 type headerData map[string][]cty.Value
 
+// headers holds all headers
 type headers struct {
 	Data headerData `hcl:",remain"`
 }
 
+// ConfigHTTP hold configurations for HTTP services
 type ConfigHTTP struct {
 	Name      string       `hcl:"name,label"`
 	Host      string       `hcl:"host,optional"`
@@ -75,14 +83,14 @@ type ConfigHTTP struct {
 	Plugins hcl.Body `hcl:",remain"`
 }
 
-// basic auth config options
+// configBA are basic auth config options
 type configBA struct {
 	User string `hcl:"username,optional"`
 	Pass string `hcl:"password,optional"`
 	Relm string `hcl:"relm,optional"`
 }
 
-// JWT config options
+// configJWT are JWT config options
 type configJWT struct {
 	Name   string         `hcl:"name,label"`
 	Alg    string         `hcl:"algo"`
@@ -91,7 +99,7 @@ type configJWT struct {
 	Secret *hcl.Attribute `hcl:"secret"`
 }
 
-// SSL config options
+// configSSL are SSL config options
 type configSSL struct {
 	CACrt   string `hcl:"ca_cert,optional"`
 	CAKey   string `hcl:"ca_key,optional"`
@@ -103,6 +111,7 @@ type configSSL struct {
 	} `hcl:"lets_encrypt,block"`
 }
 
+// configProxy are proxy config options
 type configProxy struct {
 	Name    string   `hcl:"name,label"`
 	URL     string   `hcl:"url"`
@@ -112,8 +121,16 @@ type configProxy struct {
 	_url *url.URL
 }
 
+// MiddlewareHTTP is the middleware type
 type MiddlewareHTTP func(http.Handler) http.Handler
 
+// TextBlock holds data that can be accessed by the text(name, arg...) function
+type TextBlock struct {
+	Name string         `hcl:"name,label"`
+	Data *hcl.Attribute `hcl:"data"`
+}
+
+// Route holds configurations for each HTTP path
 type Route struct {
 	Path  string      `hcl:"path,label"`
 	Desc  string      `hcl:"_-,optional"`
@@ -125,6 +142,7 @@ type Route struct {
 	Plugins hcl.Body `hcl:",remain"`
 }
 
+// RequestHTTP holds HTTP request configuration options
 type RequestHTTP struct {
 	Method string `hcl:"method,label"`
 
@@ -151,22 +169,28 @@ type RequestHTTP struct {
 	rand *rand.Rand
 }
 
+// ResponseHTTP holds HTTP response options
 type ResponseHTTP struct {
 	Status  string         `hcl:"status,label"`
 	Headers *headers       `hcl:"header,block"`
 	JWT     *responseJWT   `hcl:"jwt,block"`
 	Body    *hcl.Attribute `hcl:"body"`
 	PubKey  *string        `hcl:"hpkp"`
+
+	Plugins hcl.Body `hcl:",remain"`
 }
 
+// routeCORS holds options for CORS within a route (or path)
 type routeCORS struct {
 	AllowOrigin      string   `hcl:"allow_origin,label"`
 	AllowMethods     []string `hcl:"allow_methods,optional"`
 	AllowHeaders     []string `hcl:"allow_headers,optional"`
 	MaxAge           *int     `hcl:"max_age"`
-	AllowCredentials *bool    `hcl:"Allow_Credentials"`
+	AllowCredentials *bool    `hcl:"allow_credentials"`
 }
 
+// requestJWT hold configurations for how JWTs can be used
+// during the HTTP request process
 type requestJWT struct {
 	Name  string `hcl:"name,label"`
 	Input string `hcl:"input,label"`
@@ -178,6 +202,8 @@ type requestJWT struct {
 	KeyVals map[string]*hcl.Attribute `hcl:",remain"` // key value pairs to match on
 }
 
+// responseJWT hold configurations for how JWTs can be used
+// during the HTTP response process
 type responseJWT struct {
 	Name   string `hcl:"name,label"`
 	Output string `hcl:"output,label"`
@@ -197,6 +223,8 @@ type responseJWT struct {
 	_ctx *hcl.EvalContext
 }
 
+// routeProxy holds configurations for Proxy servers that
+// can be used during the routing process
 type routeProxy struct {
 	Name    string   `hcl:"name,label"`
 	Headers *headers `hcl:"headers,block"`

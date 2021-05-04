@@ -11,50 +11,79 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsimple"
+	plug "plugins/config"
+
 	"github.com/njones/logger"
 	"github.com/spf13/afero"
 )
 
-var _cfgFileLoadPath string
+// _runtimePath the name of the path that we use to base file loads on
+var _runtimePath string
+
+// log is the global logger used to log info
 var log = logger.New(logger.WithTimeFormat("2006/01/02 15:04:05 -"))
 
-type Plugin interface {
-	Setup() error
-	SetupRoot(hcl.Body) error
-	SetupConfig(string, hcl.Body) error // can be called multiple times
+// Plugin is the min interface needed to provide a plugin. As it allows
+// a plugin to be setup
+// type Plugin interface {
+// 	Setup() error
+// 	Version(int32) int32 // the version that API-Mocked supports is passed, the version the plugin supports
+// 	Metadata() string    // a string with the plugin semver, author
+// 	SetupRoot(hcl.Body) error
+// 	SetupConfig(string, hcl.Body) error // can be called multiple times
+// }
+
+// Plugin is the min interface needed to provide a plugin. As it allows
+// a plugin to be setup
+type Plugin plug.Plugin
+
+// RunOptions allows tests and alternative entry points (other than the
+// main CLI entrypoint) to add configuration information at runtime
+type RunOptions func(*Config)
+
+type cfgFiles []string
+
+func (flgs *cfgFiles) String() string {
+	return "config files"
 }
 
-func main() {
-	var configFile, logDir, pluginDir string
+func (flgs *cfgFiles) Set(value string) error {
+	*flgs = append(*flgs, value)
+	return nil
+}
 
-	flag.StringVar(&configFile, "config", "cfg/config.hcl", "the path to the config file")
+var configFiles cfgFiles
+
+// main starts everything
+func main() {
+	var logDir, pluginDir string
+
+	flag.Var(&configFiles, "config", "the config files to load")
 	flag.StringVar(&logDir, "log-dir", "log", "the path to the log directory")
 	flag.StringVar(&pluginDir, "plugin-dir", "./plugins/obj", "the path to where .so plugins are stored")
 
 	flag.Parse()
 
-	flp, err := filepath.Abs(configFile)
+	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
-		panic(fmt.Errorf("[server] file load: %v", err))
+		panic(err)
 	}
+	_runtimePath = dir
 
-	// all config files will be at this path
-	_cfgFileLoadPath = filepath.Dir(flp)
-
-	log.Println(run(configFile, logDir, pluginDir))
+	log.Println(run(configFiles, logDir, pluginDir))
 }
 
-type RunOptions func(*Config)
-
-func run(configFile string, logDir string, pluginDir string, opts ...RunOptions) string {
+// run reads configs and starts the process. This can be kicked off from tests
+// to make the program more testable. Pulls in the config file location, the
+// log directory (where error logs are stored) and the external .so plugin directory
+// any other options should go through the RunOptions type
+func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptions) string {
 	pluginDir = strings.TrimSuffix(pluginDir, "/") + "/" // always end with a "/"
 
 	var config Config
 
 	config.internal.os = afero.NewOsFs()
-	config.internal.file = configFile
+	config.internal.files = configFiles
 	config.internal.svrStart = time.Now()
 	config.internal.svrCfgLoadValid = true // this is only false if the reload fails...
 	config.System = &system{
@@ -76,7 +105,7 @@ func run(configFile string, logDir string, pluginDir string, opts ...RunOptions)
 				}
 			}()
 		}
-	}(false)
+	}(true)
 
 	if config.System != nil && config.System.LogDir != nil {
 		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
@@ -96,8 +125,8 @@ func run(configFile string, logDir string, pluginDir string, opts ...RunOptions)
 		// filled in and not the same size
 		config.Servers, config.Routes = mgr.nil() // send back nil, so these are clean to decode into
 
-		log.Printf("[server] loading the config file: %s ...", config.internal.file)
-		if err := hclsimple.DecodeFile(config.internal.file, _context(), &config); err != nil {
+		log.Printf("[server] loading the config files: %s ...", config.internal.files)
+		if err := decodeFile(config.internal.files, _context(), &config); err != nil {
 			if !mgr.isReload() {
 				log.Fatalf("cannot start server(s): %v", err)
 			}
@@ -136,14 +165,14 @@ func run(configFile string, logDir string, pluginDir string, opts ...RunOptions)
 		for name, plugin := range plugins {
 			log.Printf("[plugin] root init %v", name)
 			if err := plugin.Setup(); err != nil {
-				log.Println("[setup] init plugin err: %v", err)
+				log.Printf("[setup] init plugin err: %v", err)
 			}
 			if err := plugin.SetupRoot(config.Plugins); err != nil {
-				log.Println("[setup] root plugin err: %v", err)
+				log.Printf("[setup] root plugin err: %v", err)
 			}
 			for _, svr := range config.Servers {
 				if err := plugin.SetupConfig(svr.Name, svr.Plugins); err != nil {
-					log.Println("[setup] root plugin err: %v", err)
+					log.Printf("[setup] config plugin err: %v", err)
 				}
 			}
 		}

@@ -23,11 +23,15 @@ import (
 	"github.com/go-chi/chi"
 )
 
+// defaults for LetsEncrypt services
 var (
 	DefaultHostPort  = ":9090"
 	DefaultACMEEmail = "example@example.com"
 )
 
+// useTLS configures TLS for a service based on the passed in
+// ConfigHTTP data. The passed in mux, allows using Middleware to
+// send back a http pinning header
 func useTLS(mw *chi.Mux, server ConfigHTTP) *tls.Config {
 	if server.SSL == nil {
 		log.Printf("[tls] %q no certs loaded (using HTTP) ...", server.Name)
@@ -88,6 +92,7 @@ func useTLS(mw *chi.Mux, server ConfigHTTP) *tls.Config {
 	return tlsConfig
 }
 
+// cert builds a x509 cert to use in HTTPS services.
 func cert(caCrtFile, caKeyFile string) (serverTLSConf *tls.Config, pin []byte, err error) {
 	var caCrt *x509.Certificate
 	var caKey crypto.PrivateKey

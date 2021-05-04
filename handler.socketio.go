@@ -1,4 +1,4 @@
-// +build socketio
+// +build plugin_socketio
 
 package main
 
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	requ "plugins/request"
 
 	sktio "github.com/ambelovsky/gosf-socketio"
 	"github.com/ambelovsky/gosf-socketio/transport"
@@ -79,6 +81,21 @@ func (p *socketioPlugin) Setup() error {
 	p.config = make(map[string]socketioConfig)
 
 	return nil
+}
+
+// Version takes in the max version and returns the version
+// that this module supports
+func (p *socketioPlugin) Version(int32) int32 { return 1 }
+
+// Metadata returns the metadata of the plugin
+func (p *socketioPlugin) Metadata() string {
+	return `
+metadata {
+	version   = "0.1.0"
+	author    = "Nika Jones"
+	copyright = "Nika Jones - © 2021"
+}
+`
 }
 
 func (p *socketioPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) error {
@@ -159,8 +176,8 @@ func (p *socketioPlugin) Subscribe(sio socketio) {
 	})
 }
 
-func (p *socketioPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP, bool) {
-	reqb, _, _ := req.Plugins.PartialContent(&hcl.BodySchema{
+func (p *socketioPlugin) MiddlewareHTTP(r Route, plugins hcl.Body, req requ.HTTP) (MiddlewareHTTP, bool) {
+	reqb, _, _ := plugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{
 				Type:       socketioPluginName,
@@ -349,8 +366,8 @@ func (c *converter) convertBlock(block *hclsyntax.Block, out jsonObj) error {
 
 func (c *converter) convertExpression(expr hclsyntax.Expression) (interface{}, error) {
 	if c.options.Simplify {
-		value, err := expr.Value(&evalContext)
-		if err == nil {
+		value, dia := expr.Value(&evalContext)
+		if !dia.HasErrors() {
 			return ctyjson.SimpleJSONValue{Value: value}, nil
 		}
 	}
@@ -400,9 +417,9 @@ func (c *converter) convertUnary(v *hclsyntax.UnaryOpExpr) (interface{}, error) 
 		// wrapping the expression with ${...}
 		return c.wrapExpr(v), nil
 	}
-	val, err := v.Value(nil)
-	if err != nil {
-		return nil, err
+	val, dia := v.Value(nil)
+	if dia.HasErrors() {
+		return nil, dia
 	}
 	return ctyjson.SimpleJSONValue{Value: val}, nil
 }
@@ -410,9 +427,9 @@ func (c *converter) convertUnary(v *hclsyntax.UnaryOpExpr) (interface{}, error) 
 func (c *converter) convertTemplate(t *hclsyntax.TemplateExpr) (interface{}, error) {
 	if t.IsStringLiteral() {
 		// safe because the value is just the string
-		v, err := t.Value(nil)
-		if err != nil {
-			return "", err
+		v, dia := t.Value(nil)
+		if dia.HasErrors() {
+			return "", dia
 		}
 
 		b := make([]byte, t.SrcRange.End.Column)

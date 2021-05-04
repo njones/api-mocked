@@ -1,4 +1,4 @@
-// +build pubnub
+// +build plugin_pubnub
 
 package main
 
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	requ "plugins/request"
 	"sync/atomic"
 	"time"
 
@@ -16,15 +17,20 @@ import (
 	"github.com/rs/xid"
 )
 
+// pubnubPluginName is the PubNub plugin resgistered
+// name that will be used in loging and plugin requests
 const pubnubPluginName = "pubnub"
 
+// init registers the built-in plugin to the global registery
 func init() {
 	log.Println("[init] loading the PubNub plugin ...")
 	plugins[pubnubPluginName] = new(pubnubPlugin)
 }
 
+// pnServerName the name of server using this plugin
 type pnServerName string
 
+// pubnubPlugin is plugin related data
 type pubnubPlugin struct {
 	isSetup bool
 	client  struct {
@@ -37,6 +43,8 @@ type pubnubPlugin struct {
 	On map[string]func(string, string, interface{})
 }
 
+// pubnubConfig is the configuration options that
+// can be set from within a ConfigHTTP block.
 type pubnubConfig struct {
 	Name         string         `hcl:"name,label"`
 	PublishKey   *hcl.Attribute `hcl:"publish_key"`
@@ -45,6 +53,8 @@ type pubnubConfig struct {
 	UUID         string         `hcl:"uuid,optional"`
 }
 
+// pubnub stores confiurations that can come from
+// the root block
 type pubnub struct {
 	Name string `hcl:"name,label"`
 	Desc string `hcl:"_-,optional"`
@@ -60,6 +70,7 @@ type pubnub struct {
 	PublishSocketIO []pubnubBroadcast `hcl:"broadcast_socketio,block"`
 }
 
+// pubnubBroadcast stores broadcast configurations
 type pubnubBroadcast struct {
 	Namespace string         `hcl:"ns,label"`
 	Event     string         `hcl:"event,label"`
@@ -67,11 +78,14 @@ type pubnubBroadcast struct {
 	Data      *hcl.Attribute `hcl:"data"`
 }
 
+// pubnubEmit store emit configurations
 type pubnubEmit struct {
 	Channel string         `hcl:"channel,optional"`
 	Data    *hcl.Attribute `hcl:"data"`
 }
 
+// Setup is a plugin construct for the inital
+// setup of a plugin
 func (p *pubnubPlugin) Setup() (err error) {
 	log.Println("[pubnub] setup plugin ...")
 
@@ -83,6 +97,24 @@ func (p *pubnubPlugin) Setup() (err error) {
 	return nil
 }
 
+// Version takes in the max version and returns the version
+// that this module supports
+func (p *pubnubPlugin) Version(int32) int32 { return 1 }
+
+// Metadata returns the metadata of the plugin
+func (p *pubnubPlugin) Metadata() string {
+	return `
+metadata {
+	version   = "0.1.0"
+	author    = "Nika Jones"
+	copyright = "Nika Jones - © 2021"
+}
+`
+}
+
+// SetupConfig  is a plugin construct for
+// collecting service configuration information
+// for setting up a plugin
 func (p *pubnubPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) (err error) {
 	cfg := p.config[svrName]
 
@@ -117,14 +149,14 @@ func (p *pubnubPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) (err err
 		p.config[svrName] = cfg
 	}
 
-	publishKey, err := cfg.PublishKey.Expr.Value(&fileEvalCtx)
-	if err != nil {
-		return err
+	publishKey, dia := cfg.PublishKey.Expr.Value(&fileEvalCtx)
+	if dia.HasErrors() {
+		return dia
 	}
 
-	subscribeKey, err := cfg.SubscribeKey.Expr.Value(&fileEvalCtx)
-	if err != nil {
-		return err
+	subscribeKey, dia := cfg.SubscribeKey.Expr.Value(&fileEvalCtx)
+	if dia.HasErrors() {
+		return dia
 	}
 
 	var conf = pngo.NewConfig()
@@ -140,6 +172,9 @@ func (p *pubnubPlugin) SetupConfig(svrName string, svrPlugins hcl.Body) (err err
 	return nil
 }
 
+// SetupRoot  is a plugin construct for collecting
+// information from the root configuration and
+// applying it during the setup phase
 func (p *pubnubPlugin) SetupRoot(configPlugins hcl.Body) error {
 
 	var listener = p.NewListener()
@@ -168,6 +203,11 @@ func (p *pubnubPlugin) SetupRoot(configPlugins hcl.Body) error {
 	return nil
 }
 
+// NewListener takes a root setup and starts a
+// PubNub listener based on the config info. This
+// is a channel that will collect all incoming
+// requests from PubNub and pass it along to the
+// proper config option for a response
 func (p *pubnubPlugin) NewListener() *pngo.Listener {
 	log.Println("[pubnub] setup a listener ...")
 
@@ -208,6 +248,9 @@ func (p *pubnubPlugin) NewListener() *pngo.Listener {
 	return listener
 }
 
+// Subscribe sends information back to the client and deteremines
+// what will happen to the information that the listener passes back
+// to it. Based on the configured information
 func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 	log.Printf("[pubnub] subcribe to %q ...", pn.Name)
 
@@ -285,8 +328,11 @@ func (p *pubnubPlugin) Subscribe(pn pubnub, listener *pngo.Listener) {
 	}
 }
 
-func (p *pubnubPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP, bool) {
-	reqb, _, _ := req.Plugins.PartialContent(&hcl.BodySchema{
+// PostMiddlewareHTTP is a plugin concept  that will add the proper middleware to handle the request. This can
+// be thought of as the final request. This is passed in all of the blocks, that can be used during setup
+// then return a http.Handler that can be used during the request call.
+func (p *pubnubPlugin) PostMiddlewareHTTP(path string, plugins hcl.Body, req requ.HTTP) (MiddlewareHTTP, bool) {
+	reqb, _, _ := plugins.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{
 				Type:       pubnubPluginName,
@@ -321,7 +367,7 @@ func (p *pubnubPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP,
 	if req.Order == "unordered" {
 		rand.Seed(time.Now().UnixNano()) // doesn't have to be crypto-quality random here...
 	}
-	log.Printf("[pubnub] %s http response added ...", r.Path)
+	log.Printf("[pubnub] %s http response added ...", path)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Print("[pubnub] starting http response ...")
@@ -361,6 +407,7 @@ func (p *pubnubPlugin) MiddlewareHTTP(r Route, req RequestHTTP) (MiddlewareHTTP,
 					resp := resps[int(x)%len(resps)]
 					conn, ok := p.client.conn[resp.Name]
 					if !ok {
+						log.Print(`[pubnub] cannot connect ...`)
 						return
 					}
 

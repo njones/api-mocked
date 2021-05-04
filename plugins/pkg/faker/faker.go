@@ -4,37 +4,71 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
+	plug "plugins/config"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/jaswdr/faker"
 	"github.com/njones/logger"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 )
 
+var _ plug.Plugin = &fakerPlugin{}
+
 const fakerPluginName = "faker"
 
 type fakerPlugin struct {
 	data []fakeData
+	ctx  *hcl.EvalContext
 }
 
 type fakeData struct {
-	Prefix string                    `hcl:"prefix,label"`
-	KVs    map[string]*hcl.Attribute `hcl:",remain"`
-	_kv    map[string]string
+	Prefix        string  `hcl:"prefix,label"`
+	ProfileURL    *string `hcl:"profile_url"`
+	ProfileMaxNum *int    `hcl:"profile_max"`
+	Data          *struct {
+		KVs map[string]*hcl.Attribute `hcl:",remain"`
+	} `hcl:"data,block"`
+	_kv map[string]string
 }
 
 var log = logger.New()
 
+// SetupPluginExt ...
 func SetupPluginExt() (string, interface{}) { return fakerPluginName, new(fakerPlugin) }
 
 func (p *fakerPlugin) Setup() error {
 	log.Println("[faker] setup plugin ...")
 	return nil
 }
-func (p *fakerPlugin) SetupConfig(string, hcl.Body) error { return nil }
+func (p *fakerPlugin) Version(int32) int32 { return 1 }
+func (p *fakerPlugin) Metadata() string {
+	return `
+metadata {
+	version   = "0.1.0"
+	author    = "Nika Jones"
+	copyright = "Nika Jones - © 2021"
+}
+`
+}
+func (p *fakerPlugin) SetupConfig(string, hcl.Body) error {
+	// set the default values
+	for i, v := range p.data {
+		if v.ProfileURL == nil {
+			link := "https://randomuser.me/api/portraits/men/%d.jpg"
+			p.data[i].ProfileURL = &link
+		}
+		if v.ProfileMaxNum == nil {
+			max := 99
+			p.data[i].ProfileMaxNum = &max
+		}
+	}
+	return nil
+}
 
 func (p *fakerPlugin) WithLogger(l logger.Logger) {
 	log = l
@@ -62,24 +96,53 @@ func (p *fakerPlugin) SetupRoot(plugins hcl.Body) error {
 				blok.Prefix = block.Labels[0] // the same index as the LabelNames above...
 			}
 
-			for K, V := range blok.KVs {
-				v, _ := V.Expr.Value(fakeFunEvalContext())
-				blok._kv[K] = v.AsString()
+			if blok.Data != nil {
+			ReadBloks:
+				for K, V := range blok.Data.KVs {
+					v, _ := V.Expr.Value(p.fakeFunEvalContext(block, modeIn))
+					switch v.Type() {
+					case cty.String:
+						blok._kv[K] = v.AsString()
+					default:
+						// special case looking up the profile_url
+						// and adding the block name to the first parameter
+						if fnce, ok := V.Expr.(*hclsyntax.FunctionCallExpr); ok {
+							if fnc, ok := p.fakeFunEvalContext(block, modeIn).Functions[fnce.Name]; ok {
+								for i, param := range fnc.Params() {
+									switch param.Name {
+									case "prefix_from_block":
+										if i == 0 {
+											strv, err := fnc.Call([]cty.Value{cty.StringVal(blok.Prefix)})
+											if err != nil {
+												panic(err) // TODO(njones): return error with std ErrXXXXX type
+											}
+											blok._kv[K] = strv.AsString()
+											continue ReadBloks
+										}
+									}
+								}
+							}
+						}
+						panic(fmt.Errorf("a bad function (%s): %#v", K, v)) // TODO(njones): return error with std ErrXXXXX type
+					}
+				}
 			}
 
 			p.data = append(p.data, blok)
 		}
 	}
 
+	p.ctx = p.HCLContext()
+
 	return nil
 }
 
 func (p *fakerPlugin) Variables() map[string]cty.Value {
-	return p.HCLContext().Variables
+	return p.ctx.Variables
 }
 
 func (p *fakerPlugin) Functions() map[string]function.Function {
-	return p.HCLContext().Functions
+	return p.ctx.Functions
 }
 
 func (p *fakerPlugin) HCLContext() *hcl.EvalContext {
@@ -87,7 +150,7 @@ func (p *fakerPlugin) HCLContext() *hcl.EvalContext {
 		return &hcl.EvalContext{}
 	}
 
-	ctx := fakeFunEvalContext()
+	ctx := p.fakeFunEvalContext(nil, modeEx)
 	mBlok := make(map[string]cty.Value)
 	for _, blok := range p.data {
 		mKey := make(map[string]cty.Value)
@@ -96,11 +159,16 @@ func (p *fakerPlugin) HCLContext() *hcl.EvalContext {
 		}
 		mBlok[blok.Prefix] = cty.ObjectVal(mKey)
 	}
-	ctx.Variables["fake"] = cty.ObjectVal(mBlok)
+	ctx.Variables["faker"] = cty.ObjectVal(mBlok)
 	return ctx
 }
 
-func fakeFunEvalContext() *hcl.EvalContext {
+const (
+	modeIn = iota + 1
+	modeEx
+)
+
+func (p *fakerPlugin) fakeFunEvalContext(block *hcl.Block, mode int) *hcl.EvalContext {
 	fake := faker.New()
 
 	var FakeFun = func(fn func() string) function.Function {
@@ -108,6 +176,49 @@ func fakeFunEvalContext() *hcl.EvalContext {
 			Type: function.StaticReturnType(cty.String),
 			Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 				return cty.StringVal(fn()), nil
+			},
+		})
+	}
+
+	var FakeFun1Int = func(fn func(int) string) function.Function {
+		return function.New(&function.Spec{
+			Params: []function.Parameter{
+				{
+					Name:             "max",
+					Type:             cty.Number,
+					AllowDynamicType: true,
+					AllowMarked:      true,
+				},
+			},
+			Type: function.StaticReturnType(cty.String),
+			Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+				num, _ := args[0].AsBigFloat().Int64()
+				return cty.StringVal(fn(int(num))), nil
+			},
+		})
+	}
+
+	var FakeFun1Int2Str = func(fn func(int) []string) function.Function {
+		return function.New(&function.Spec{
+			Params: []function.Parameter{
+				{
+					Name:             "max",
+					Type:             cty.Number,
+					AllowDynamicType: true,
+					AllowMarked:      true,
+				},
+				{
+					Name:             "seperator",
+					Type:             cty.String,
+					AllowDynamicType: true,
+					AllowMarked:      true,
+				},
+			},
+			Type: function.StaticReturnType(cty.String),
+			Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+				num, _ := args[0].AsBigFloat().Int64()
+				strs := fn(int(num))
+				return cty.StringVal(strings.Join(strs, args[1].AsString())), nil
 			},
 		})
 	}
@@ -120,71 +231,92 @@ func fakeFunEvalContext() *hcl.EvalContext {
 		return func() string { return fmt.Sprintf("%f.4", fn()) }
 	}
 
+	var ns string
+	switch mode {
+	case modeEx:
+		ns = "faker_"
+		if block != nil && len(block.Labels) > 0 {
+			ns += block.Labels[0] + "_"
+		}
+	}
+
 	var hec *hcl.EvalContext
 	hec = &hcl.EvalContext{
 		Variables: make(map[string]cty.Value),
 		Functions: map[string]function.Function{
-			"name":     FakeFun(fake.Person().Name),
-			"address":  FakeFun(fake.Address().Address),
-			"city":     FakeFun(fake.Address().City),
-			"state":    FakeFun(fake.Address().State),
-			"postcode": FakeFun(fake.Address().PostCode),
-			"country":  FakeFun(fake.Address().Country),
-			"lat":      FakeFun(FunF642Str(fake.Address().Latitude)),
-			"long":     FakeFun(FunF642Str(fake.Address().Longitude)),
+			ns + "name":     FakeFun(fake.Person().Name),
+			ns + "address":  FakeFun(fake.Address().Address),
+			ns + "city":     FakeFun(fake.Address().City),
+			ns + "state":    FakeFun(fake.Address().State),
+			ns + "postcode": FakeFun(fake.Address().PostCode),
+			ns + "country":  FakeFun(fake.Address().Country),
+			ns + "lat":      FakeFun(FunF642Str(fake.Address().Latitude)),
+			ns + "long":     FakeFun(FunF642Str(fake.Address().Longitude)),
 
-			"app_name":    FakeFun(fake.App().Name),
-			"app_version": FakeFun(fake.App().Version),
+			ns + "app_name":    FakeFun(fake.App().Name),
+			ns + "app_version": FakeFun(fake.App().Version),
 
-			"color_css":  FakeFun(fake.Color().CSS),
-			"color_name": FakeFun(fake.Color().ColorName),
-			"color_hex":  FakeFun(fake.Color().Hex),
-			"color_rgb":  FakeFun(fake.Color().RGB),
+			ns + "color_css":  FakeFun(fake.Color().CSS),
+			ns + "color_name": FakeFun(fake.Color().ColorName),
+			ns + "color_hex":  FakeFun(fake.Color().Hex),
+			ns + "color_rgb":  FakeFun(fake.Color().RGB),
 
-			"email_company":       FakeFun(fake.Internet().CompanyEmail),
-			"domain":              FakeFun(fake.Internet().Domain),
-			"email":               FakeFun(fake.Internet().Email),
-			"email_free":          FakeFun(fake.Internet().FreeEmail),
-			"email_domain_free":   FakeFun(fake.Internet().FreeEmailDomain),
-			"http_method":         FakeFun(fake.Internet().HTTPMethod),
-			"ipv4":                FakeFun(fake.Internet().Ipv4),
-			"ipv6":                FakeFun(fake.Internet().Ipv6),
-			"ipv4_local":          FakeFun(fake.Internet().LocalIpv4),
-			"mac_address":         FakeFun(fake.Internet().MacAddress),
-			"password":            FakeFun(fake.Internet().Password),
-			"query":               FakeFun(fake.Internet().Query),
-			"email_safe":          FakeFun(fake.Internet().SafeEmail),
-			"email_domain_safe":   FakeFun(fake.Internet().SafeEmailDomain),
-			"slug":                FakeFun(fake.Internet().Slug),
-			"http_status_code":    FakeFun(FunInt2Str(fake.Internet().StatusCode)),
-			"http_status_message": FakeFun(fake.Internet().StatusCodeMessage),
-			"domain.tld":          FakeFun(fake.Internet().TLD),
-			"url":                 FakeFun(fake.Internet().URL),
-			"username":            FakeFun(fake.Internet().User),
+			ns + "email_company":       FakeFun(fake.Internet().CompanyEmail),
+			ns + "domain":              FakeFun(fake.Internet().Domain),
+			ns + "email":               FakeFun(fake.Internet().Email),
+			ns + "email_free":          FakeFun(fake.Internet().FreeEmail),
+			ns + "email_domain_free":   FakeFun(fake.Internet().FreeEmailDomain),
+			ns + "http_method":         FakeFun(fake.Internet().HTTPMethod),
+			ns + "ipv4":                FakeFun(fake.Internet().Ipv4),
+			ns + "ipv6":                FakeFun(fake.Internet().Ipv6),
+			ns + "ipv4_local":          FakeFun(fake.Internet().LocalIpv4),
+			ns + "mac_address":         FakeFun(fake.Internet().MacAddress),
+			ns + "password":            FakeFun(fake.Internet().Password),
+			ns + "query":               FakeFun(fake.Internet().Query),
+			ns + "email_safe":          FakeFun(fake.Internet().SafeEmail),
+			ns + "email_domain_safe":   FakeFun(fake.Internet().SafeEmailDomain),
+			ns + "slug":                FakeFun(fake.Internet().Slug),
+			ns + "http_status_code":    FakeFun(FunInt2Str(fake.Internet().StatusCode)),
+			ns + "http_status_message": FakeFun(fake.Internet().StatusCodeMessage),
+			ns + "domain.tld":          FakeFun(fake.Internet().TLD),
+			ns + "url":                 FakeFun(fake.Internet().URL),
+			ns + "username":            FakeFun(fake.Internet().User),
 
-			"cc_exp":    FakeFun(fake.Payment().CreditCardExpirationDateString),
-			"cc_number": FakeFun(fake.Payment().CreditCardNumber),
-			"cc_type":   FakeFun(fake.Payment().CreditCardType),
+			ns + "cc_exp":    FakeFun(fake.Payment().CreditCardExpirationDateString),
+			ns + "cc_number": FakeFun(fake.Payment().CreditCardNumber),
+			ns + "cc_type":   FakeFun(fake.Payment().CreditCardType),
 
-			"gender":        FakeFun(fake.Person().Gender),
-			"gender_female": FakeFun(fake.Person().GenderFemale),
-			"gender_male":   FakeFun(fake.Person().GenderMale),
-			"name_female":   FakeFun(fake.Person().NameFemale),
-			"name_male":     FakeFun(fake.Person().NameMale),
-			"ssn":           FakeFun(fake.Person().SSN),
-			"name_suffix":   FakeFun(fake.Person().Suffix),
+			ns + "gender":        FakeFun(fake.Person().Gender),
+			ns + "gender_female": FakeFun(fake.Person().GenderFemale),
+			ns + "gender_male":   FakeFun(fake.Person().GenderMale),
+			ns + "name_female":   FakeFun(fake.Person().NameFemale),
+			ns + "name_male":     FakeFun(fake.Person().NameMale),
+			ns + "ssn":           FakeFun(fake.Person().SSN),
+			ns + "name_suffix":   FakeFun(fake.Person().Suffix),
 
-			"phone":          FakeFun(fake.Phone().Number),
-			"area_code":      FakeFun(fake.Phone().AreaCode),
-			"area_code_free": FakeFun(fake.Phone().TollFreeAreaCode),
-			"phone_free":     FakeFun(fake.Phone().ToolFreeNumber),
+			ns + "phone":          FakeFun(fake.Phone().Number),
+			ns + "area_code":      FakeFun(fake.Phone().AreaCode),
+			ns + "area_code_free": FakeFun(fake.Phone().TollFreeAreaCode),
+			ns + "phone_free":     FakeFun(fake.Phone().ToolFreeNumber),
 
-			"ua_chrome":  FakeFun(fake.UserAgent().Chrome),
-			"ua_firefox": FakeFun(fake.UserAgent().Firefox),
-			"ua_ie":      FakeFun(fake.UserAgent().InternetExplorer),
-			"ua_opera":   FakeFun(fake.UserAgent().Opera),
-			"ua_safari":  FakeFun(fake.UserAgent().Safari),
-			"ua":         FakeFun(fake.UserAgent().UserAgent),
+			ns + "ua_chrome":  FakeFun(fake.UserAgent().Chrome),
+			ns + "ua_firefox": FakeFun(fake.UserAgent().Firefox),
+			ns + "ua_ie":      FakeFun(fake.UserAgent().InternetExplorer),
+			ns + "ua_opera":   FakeFun(fake.UserAgent().Opera),
+			ns + "ua_safari":  FakeFun(fake.UserAgent().Safari),
+			ns + "ua":         FakeFun(fake.UserAgent().UserAgent),
+
+			ns + "profile_url": p.fakeProfilePicURL(block),
+
+			ns + "lorem_paragraph": FakeFun1Int(fake.Lorem().Paragraph),
+			ns + "lorem_sentence":  FakeFun1Int(fake.Lorem().Sentence),
+			ns + "lorem_text":      FakeFun1Int(fake.Lorem().Text),
+			ns + "lorem_word":      FakeFun(fake.Lorem().Word),
+			ns + "lorem_words":     FakeFun1Int2Str(fake.Lorem().Words),
+
+			ns + "uuid":          FakeFun(fake.UUID().V4),
+			ns + "random_letter": FakeFun(fake.RandomLetter),
+			ns + "random_number": FakeFun(FunInt2Str(fake.RandomDigit)),
 
 			"faker": function.New(&function.Spec{
 				Params: []function.Parameter{
@@ -202,13 +334,68 @@ func fakeFunEvalContext() *hcl.EvalContext {
 					if fn, ok := hec.Functions[str]; ok {
 						return fn.Call([]cty.Value{})
 					}
-					return cty.StringVal(fmt.Sprintf("NOT FOUND: %q", args[0].AsString())), fmt.Errorf("bad")
+					return cty.StringVal(fmt.Sprintf("NOT FOUND: %q", args[0].AsString())), fmt.Errorf("bad") // TODO(njones): return error with std ErrXXXXX type
 				},
 			}),
 		},
 	}
 
+	// only allow concat to be used internal to faker blocks
+	if mode == modeIn {
+		hec.Functions["concat"] = function.New(&function.Spec{
+			VarParam: &function.Parameter{
+				Name:             "string",
+				Type:             cty.String,
+				AllowDynamicType: true,
+				AllowMarked:      true,
+			},
+			Type: function.StaticReturnType(cty.String),
+			Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+				sb := new(strings.Builder)
+				for _, arg := range args {
+					sb.WriteString(arg.AsString())
+				}
+				return cty.StringVal(sb.String()), nil
+			},
+		})
+	}
+
 	return hec
+}
+
+func (p *fakerPlugin) fakeProfilePicURL(block *hcl.Block) function.Function {
+	return function.New(&function.Spec{
+		Type: function.StaticReturnType(cty.String),
+		Params: []function.Parameter{
+			{
+				Name:             "prefix_from_block",
+				Type:             cty.String,
+				AllowDynamicType: false,
+				AllowMarked:      false,
+			},
+		},
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			var blockName string
+			switch {
+			case len(args) > 0:
+				blockName = args[0].AsString()
+			case block != nil:
+				blockName = block.Labels[0]
+			default:
+				n := rand.Intn(99)
+				return cty.StringVal(fmt.Sprintf("https://randomuser.me/api/portraits/men/%d.jpg", n)), nil
+			}
+			for _, d := range p.data {
+				if d.Prefix == blockName {
+					n := rand.Intn(*d.ProfileMaxNum)
+					return cty.StringVal(fmt.Sprintf(*d.ProfileURL, n)), nil
+				}
+			}
+			// if the profile name is wrong or missing, then we just choose a random profile and don't fail
+			n := rand.Intn(99)
+			return cty.StringVal(fmt.Sprintf("https://randomuser.me/api/portraits/men/%d.jpg", n)), nil
+		},
+	})
 }
 
 func main() {}

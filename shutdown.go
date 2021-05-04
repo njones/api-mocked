@@ -6,6 +6,7 @@ import (
 	"syscall"
 )
 
+// _shutdown handles the Ctrl-C and other shutdown signals
 func _shutdown(config Config) chan struct{} {
 	shutdown := make(chan struct{}, 1)
 

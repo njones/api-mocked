@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
+// corsHandler handles checking CORS options and
+// making sure they are valid before continuing to
+// process a HTTP request
 func corsHandler(cors *routeCORS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+
 		log.Println("[cors] sending back headers ...")
 		if cors == nil {
 			log.Println("[cors] skipping ...")

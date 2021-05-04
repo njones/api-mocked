@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httputil"
+	requ "plugins/request"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -23,35 +24,20 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
-type responseWriter struct {
-	wrote  bool
-	status int
-	http.ResponseWriter
-}
-
-func (rw *responseWriter) Write(p []byte) (int, error) {
-	rw.wrote = true
-	return rw.ResponseWriter.Write(p)
-}
-
-func (rw *responseWriter) WriteHeader(status int) {
-	rw.status = status
-	rw.ResponseWriter.WriteHeader(status)
-}
-
-func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
-	return rw.ResponseWriter.(http.Pusher).Push(target, opts)
-}
-
+// interval holds a map of the string names that
+// can be used as interval times
 var interval = map[string]time.Duration{
 	"ns": time.Nanosecond,
 	"ms": time.Millisecond,
 	"µs": time.Microsecond,
+	"us": time.Microsecond,
 	"s":  time.Second,
 	"m":  time.Minute,
 	"h":  time.Hour,
 }
 
+// delay is the funtion used to return the
+// time duration for delay formatted string
 func delay(str string) time.Duration {
 	var n int
 	var i string
@@ -64,8 +50,12 @@ func delay(str string) time.Duration {
 	return time.Duration(0)
 }
 
+// reqStateFn is the recursive type that represents
+// a state during the processing of a HTTP request
 type reqStateFn func(*reqState) reqStateFn
 
+// reqState is all of the state-wide values needed
+// when processing a HTTP request
 type reqState struct {
 	state  reqStateFn
 	status int
@@ -76,19 +66,29 @@ type reqState struct {
 	w http.ResponseWriter
 	r *http.Request
 
+	txts []TextBlock
+
 	vars map[string]cty.Value         // HCL variables
 	funs map[string]function.Function // HCL functions
 
 	err error
 }
 
-func setup(idx *uint64, resps []ResponseHTTP) reqStateFn {
+// setup is the inital setup state where all things are
+// initialized
+func setup(idx *uint64, resps []ResponseHTTP, texts []TextBlock) reqStateFn {
 	return func(st *reqState) reqStateFn {
-		// where all things  are init'd
+		st.txts = texts
 		return execOrder(idx, resps)
 	}
 }
 
+// execOrder executes the Order of responses for each state
+// this requires passing in the HTTP responses that can be used
+// and the index as a reference, the index will be atomiclly
+// incremented accross *all* requests. There currently is no
+// way to increment for a single request profile  (ie user,
+// instance, or some identifying factor)
 func execOrder(idx *uint64, resps []ResponseHTTP) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		var order uint64
@@ -104,10 +104,31 @@ func execOrder(idx *uint64, resps []ResponseHTTP) reqStateFn {
 			order = atomic.AddUint64(idx, 1) - 1
 		}
 		st.res = resps[int(order)%len(resps)]
-		return execDelay
+		return execPrePluginRequestHTTP
 	}
 }
 
+func execPrePluginRequestHTTP(st *reqState) reqStateFn {
+	req := *st.r
+	for _, plugin := range plugins {
+		if plug, ok := plugin.(PrePluginRequestHTTP); ok {
+			requHTTP := requ.HTTP{
+				Method:      st.req.Method,
+				Ticker:      st.req.Ticker,
+				Order:       st.req.Order,
+				Delay:       st.req.Delay,
+				HTTPRequest: req,
+				ServerName:  CtxKeyServerName,
+			}
+			if st.err = plug.PreRequestHTTP(st.req.Plugins, requHTTP); st.err != nil {
+				return nil
+			}
+		}
+	}
+	return execDelay
+}
+
+// execDelay executed the delay of a request
 func execDelay(st *reqState) reqStateFn {
 	if len(st.req.Delay) > 0 {
 		time.Sleep(delay(st.req.Delay))
@@ -115,6 +136,12 @@ func execDelay(st *reqState) reqStateFn {
 	return execStatus
 }
 
+// execStatus executes the return status of a request
+// the status of a request must be a number, unless
+// it's the name of a proxy server, in which case
+// the request will be handed off to the proxy server
+// and the status code will be determined by the
+// proxy service
 func execStatus(st *reqState) reqStateFn {
 	var resStatus = st.res.Status
 	if resStatus == "" {
@@ -136,6 +163,9 @@ func execStatus(st *reqState) reqStateFn {
 	return execAddVariables(varsCtx)
 }
 
+// useProxy returns the request via a proxy based on the
+// configured proxy. It will take in any headers and send
+// those in the request to the proxy server.
 func useProxy(w http.ResponseWriter, r *http.Request, proxy *configProxy, headers *headers) {
 	xy := httputil.NewSingleHostReverseProxy(proxy._url)
 
@@ -162,6 +192,7 @@ func useProxy(w http.ResponseWriter, r *http.Request, proxy *configProxy, header
 	xy.ServeHTTP(w, r)
 }
 
+// execProxyHTTP executes a proxy server if the state requires it
 func execProxyHTTP(resStatus string) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		if proxy, ok := st.r.Context().Value(ctxKey(resStatus)).(*configProxy); ok {
@@ -172,6 +203,8 @@ func execProxyHTTP(resStatus string) reqStateFn {
 	}
 }
 
+// execAddVariables gathers all of the HIL variables that
+// can be used in a HTTP request/response
 func execAddVariables(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 
@@ -204,10 +237,16 @@ func execAddVariables(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execAddFunctions gathers all of the HIL functions that can be
+// used during the HTTP request/response
 func execAddFunctions(funsCtx map[string]function.Function) reqStateFn {
 	return func(st *reqState) reqStateFn {
 
-		if _, ok := funsCtx["plugin"]; !ok {
+		if _, ok := funsCtx["standard placeholder"]; !ok {
+			return execFunCtxStandard(funsCtx)
+		}
+
+		if _, ok := funsCtx["plugin placeholder"]; !ok {
 			return execFunCtxPlugin(funsCtx)
 		}
 
@@ -217,6 +256,7 @@ func execAddFunctions(funsCtx map[string]function.Function) reqStateFn {
 	}
 }
 
+// execVarCtxRequest executes gathering HIL Request variables
 func execVarCtxRequest(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		if st.r.Method != http.MethodPost {
@@ -238,6 +278,7 @@ func execVarCtxRequest(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxHeader executes gathering HIL Request Header variables
 func execVarCtxHeader(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		params := st.r.Header
@@ -261,6 +302,7 @@ func execVarCtxHeader(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxQuery executes gathering HIL Request Query variables
 func execVarCtxQuery(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		params := st.r.URL.Query()
@@ -284,6 +326,7 @@ func execVarCtxQuery(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxPath executes gathering HIL variables from the URL path
 func execVarCtxPath(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		params := chi.RouteContext(st.r.Context()).URLParams
@@ -303,6 +346,7 @@ func execVarCtxPath(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxPost executes gathering HIL Request POST variables
 func execVarCtxPost(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		params := st.r.Form
@@ -326,6 +370,8 @@ func execVarCtxPost(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxJWT executes gathering HIL JWT variables that were
+// used during the request process
 func execVarCtxJWT(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		token, ok := st.r.Context().Value(CtxKeyJWTToken).(*jwtgo.Token)
@@ -352,6 +398,8 @@ func execVarCtxJWT(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execVarCtxPlugin executes gathering HIL variables that come from
+// built-in or pre-build Go plugins
 func execVarCtxPlugin(varsCtx map[string]cty.Value) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		type plugVars interface {
@@ -371,6 +419,23 @@ func execVarCtxPlugin(varsCtx map[string]cty.Value) reqStateFn {
 	}
 }
 
+// execFunCtxStandard executes gathering standard HIL functions
+func execFunCtxStandard(funsCtx map[string]function.Function) reqStateFn {
+	return func(st *reqState) reqStateFn {
+		type plugFns interface {
+			Functions() map[string]function.Function
+		}
+
+		funsCtx["file"] = FileToStr("", "")
+
+		funsCtx["text"] = TextBlockToStr(st.txts)
+
+		funsCtx["standard placeholder"] = function.Function{} // a placeholder, standard functions have a different root
+		return execAddFunctions(funsCtx)
+	}
+}
+
+// execFunCtxPlugin executes gathering HIL functions from built-in or Go built plugins
 func execFunCtxPlugin(funsCtx map[string]function.Function) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		type plugFns interface {
@@ -385,11 +450,12 @@ func execFunCtxPlugin(funsCtx map[string]function.Function) reqStateFn {
 			}
 		}
 
-		funsCtx["plugin"] = function.Function{} // a placeholder, plugins have a different root
+		funsCtx["plugin placeholder"] = function.Function{} // a placeholder, plugins have a different root
 		return execAddFunctions(funsCtx)
 	}
 }
 
+// execResponseHeaders executes adding response headers to the response
 func execResponseHeaders(st *reqState) reqStateFn {
 	if st.res.Headers == nil {
 		return execOutput
@@ -403,6 +469,8 @@ func execResponseHeaders(st *reqState) reqStateFn {
 	return execOutput
 }
 
+// execOutput executes determining if the output is a JWT or some other output,
+// which is currently a body
 func execOutput(st *reqState) reqStateFn {
 	if st.res.JWT != nil {
 		return execJWTOutput
@@ -410,6 +478,9 @@ func execOutput(st *reqState) reqStateFn {
 	return execBodyOutput
 }
 
+// execJWTOutput executes gathering all of the JWT values for output
+// this includes using the variable, and function contexts to determine
+// the final output of values
 func execJWTOutput(st *reqState) reqStateFn {
 	var resJWT = st.res.JWT
 	var cfgJWT, ok = st.r.Context().Value(ctxKey(resJWT.Name)).(*configJWT)
@@ -420,7 +491,7 @@ func execJWTOutput(st *reqState) reqStateFn {
 
 	resJWT._ctx = &hcl.EvalContext{Variables: st.vars, Functions: st.funs}
 
-	var output, err = marshalJWT(cfgJWT, resJWT, st.r.Context().Value(sigCtxKey))
+	var output, err = marshalJWT(cfgJWT, resJWT, st.r.Context().Value(CtxKeySignature))
 	if err != nil {
 		st.err = ErrMarshalJWT.F(err)
 		return nil
@@ -441,6 +512,8 @@ func execJWTOutput(st *reqState) reqStateFn {
 	return finish(output)
 }
 
+// execBodyOutput exceutes determining if a body value
+// needs to resolve variables and function calls
 func execBodyOutput(st *reqState) reqStateFn {
 	if st.res.Body == nil {
 		return finished
@@ -454,6 +527,9 @@ func execBodyOutput(st *reqState) reqStateFn {
 	return execBodyValueOutput
 }
 
+// execBodyTemplateOutput executes adding variables
+// to the body to simulate a 0 index for variables
+// that don't have an index but should.
 func execBodyTemplateOutput(st *reqState) reqStateFn {
 	body, _ := st.res.Body.Expr.(*hclsyntax.TemplateExpr)
 
@@ -494,6 +570,8 @@ LookForIndexes:
 	return execBodyValueOutput
 }
 
+// execBodyValueOutput resolves all of the function/variables
+// within the HCL context
 func execBodyValueOutput(st *reqState) reqStateFn {
 	ctx := &hcl.EvalContext{Variables: st.vars, Functions: st.funs}
 
@@ -516,8 +594,11 @@ func execBodyValueOutput(st *reqState) reqStateFn {
 	return finish(string(b))
 }
 
+// finished writes an empty string to the output
 func finished(st *reqState) reqStateFn { return finish("") }
 
+// finish writes the out string to the output, with the status
+// that was deterimed during the execStatus stage.
 func finish(out string) reqStateFn {
 	return func(st *reqState) reqStateFn {
 		st.w.WriteHeader(int(st.status))
@@ -527,7 +608,12 @@ func finish(out string) reqStateFn {
 	}
 }
 
-func httpHandler(req RequestHTTP) http.HandlerFunc {
+// httpHandler returns the HTTP handler that can be added to the
+// mux route, for a given path. This is what kicks off the
+// state machine for every call. Pass in a req.rand Random number
+// generater and you're own req.seed to make detereministic results
+// for testing.
+func httpHandler(req RequestHTTP, texts []TextBlock) http.HandlerFunc {
 	var idx uint64
 	if req.seed == 0 {
 		req.seed = time.Now().UnixNano()
@@ -536,7 +622,7 @@ func httpHandler(req RequestHTTP) http.HandlerFunc {
 	resps := req.Response
 	return WriteError(func(w http.ResponseWriter, r *http.Request) (err error) {
 		st := &reqState{r: r, w: w, req: req}
-		st.state = setup(&idx, resps)
+		st.state = setup(&idx, resps, texts)
 		for st.state != nil && st.err == nil {
 			st.state = st.state(st)
 		}

@@ -5,25 +5,105 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	conf "plugins/config"
+	requ "plugins/request"
+	resp "plugins/response"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi"
+	"github.com/hashicorp/hcl/v2"
 )
 
+// ctxKey is the type that is used to wrap context.Context keys (so they are not plain strings)
 type ctxKey string
 
+// CtxKeyServerName is the context key that holds name of the server that is supplying the request
+const CtxKeyServerName ctxKey = "_server_name_"
+
+// hfsmws HandlerFunc's and MiddleWare's struct, that is passed to the context when there are
+// multiple requests in a path. This is so that if a response inside of a path doesn't match
+// then you can check others.
+type hfsmws struct {
+	hfs   []http.HandlerFunc
+	mws   []chi.Middlewares
+	track int
+}
+type (
+	// PrePluginHTTP runs to add plugins Middleware before any other middleware is added
+	// Pass in the route and the Body (which should) usually be the `Plugins` field in a
+	// struct. Any Request HTTP information needs to be copied over to the `requ.HTTP`
+	// struct (as this breaks cicrular dependencies).
+	PrePluginHTTP interface {
+		PreMiddlewareHTTP(string, hcl.Body, requ.HTTP) (func(http.Handler) http.Handler, bool)
+	}
+
+	// PostPluginHTTP runs to add plugins Middleware after any other middleware is added,
+	// but before the CORS and Proxy middleware. Pass in the route and the Body (which should)
+	// usually be the `Plugins` field in a struct. Any Request HTTP information needs to be
+	// copied over to the `requ.HTTP` struct (as this breaks cicrular dependencies).
+	PostPluginHTTP interface {
+		PostMiddlewareHTTP(string, hcl.Body, requ.HTTP) (MiddlewareHTTP, bool)
+	}
+)
+
+type (
+	// PrePluginConfigHTTP runs any plugin configurations before the builtin
+	// configuration options. Pass in the Body (which should)
+	// usually be the `Plugins` field in a struct. Any Request HTTP information
+	// needs to be copied over to the `requ.HTTP` struct (as this breaks any
+	// cicrular dependencies).
+	PrePluginConfigHTTP interface {
+		PreConfigHTTP(hcl.Body, conf.HTTP) error
+	}
+
+	// PostPluginConfigHTTP runs any plugin configurations after the builtin
+	// configuration options. Pass in the Body (which should) usually be the
+	// `Plugins` field in a struct. Any Request HTTP information needs to
+	// be copied over to the `requ.HTTP` struct (as this breaks any cicrular
+	// dependencies).
+	PostPluginConfigHTTP interface {
+		PostConfigHTTP(hcl.Body, conf.HTTP) error
+	}
+)
+
+type (
+	// PrePluginRequestHTTP runs any plugin configurations during
+	// the start of a HTTP request setup.
+	PrePluginRequestHTTP interface {
+		PreRequestHTTP(hcl.Body, requ.HTTP) error
+	}
+
+	// PostPluginRequestHTTP runs any plugin configurations during
+	// the end of a HTTP request setup.
+	PostPluginRequestHTTP interface {
+		PostRequestHTTP(hcl.Body, requ.HTTP) error
+	}
+)
+
+type (
+	// PrePluginResponseHTTP runs any plugin configurations during
+	// the start of a HTTP response setup.
+	PrePluginResponseHTTP interface {
+		PreResponseHTTP(hcl.Body, resp.HTTP) error
+	}
+
+	// PostPluginResponseHTTP runs any plugin configurations during
+	// the start of a HTTP response setup.
+	PostPluginResponseHTTP interface {
+		PostResponseHTTP(hcl.Body, resp.HTTP) error
+	}
+)
+
+// plugins is a global map that holds all of the plugins.
+// both GO plugin, and builtin plugins
 var plugins = make(map[string]Plugin)
 
-type PluginHTTP interface {
-	MiddlewareHTTP(Route, RequestHTTP) (MiddlewareHTTP, bool)
-}
-
-const CtxKeyJWTToken ctxKey = "_jwt_token_"
-const CtxKeyUseProxy ctxKey = "_use_proxy_name_"
-
+// _http sets up HTTP servers and services that rely on HTTP
+// this is a blocking function that ends up serving how many
+// HTTP servers should be created
 func _http(config *Config) chan struct{} {
 
 	ro := chi.NewRouter() // routes
@@ -46,13 +126,38 @@ func _http(config *Config) chan struct{} {
 			ro.With(corsMidware).MethodFunc("options", route.Path, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 		}
 
+		is := make(map[string]int)
+		for _, v := range route.Request {
+			for _, method := range strings.Split(v.Method, "|") {
+				is[strings.ToUpper(method)]++
+			}
+		}
+
+		// collect multiple response structs that
+		// can be matched against later
+		multiResponse := make(map[string]hfsmws)
+		for k, i := range is {
+			multiResponse[k] = hfsmws{hfs: make([]http.HandlerFunc, i), mws: make([]chi.Middlewares, i)}
+		}
+
 		// add http response routes
-		for _, req := range route.Request {
+		for i, req := range route.Request {
 			for _, method := range strings.Split(req.Method, "|") {
 				method = strings.ToUpper(strings.TrimSpace(method))
+
 				var midware chi.Middlewares
 
 				// add any method middleware
+				// add any plugin pre middleware
+				for k, plugin := range plugins {
+					if plug, ok := plugin.(PrePluginHTTP); ok {
+						requHTTP := requ.HTTP{Method: req.Method, Ticker: req.Ticker, Order: req.Order, Delay: req.Delay}
+						if hdlr, ok := plug.PreMiddlewareHTTP(route.Path, req.Plugins, requHTTP); ok {
+							log.Printf("[http][%s][pre] %s middleware added ...", k, route.Path)
+							midware = append(midware, hdlr)
+						}
+					}
+				}
 
 				// check for JWT authorization
 				if req.JWT != nil {
@@ -72,11 +177,12 @@ func _http(config *Config) chan struct{} {
 					midware = append(midware, checkRequestHeader(req, ro.NotFoundHandler()))
 				}
 
-				// add any plugin middleware
+				// add any plugin post middleware
 				for k, plugin := range plugins {
-					if _, ok := plugin.(PluginHTTP); ok {
-						if hdlr, ok := plugin.(PluginHTTP).MiddlewareHTTP(route, req); ok {
-							log.Printf("[http][%s] %s middleware added ...", k, route.Path)
+					if plug, ok := plugin.(PostPluginHTTP); ok {
+						requHTTP := requ.HTTP{Method: req.Method, Ticker: req.Ticker, Order: req.Order, Delay: req.Delay}
+						if hdlr, ok := plug.PostMiddlewareHTTP(route.Path, req.Plugins, requHTTP); ok {
+							log.Printf("[http][%s][post] %s middleware added ...", k, route.Path)
 							midware = append(midware, hdlr)
 						}
 					}
@@ -101,10 +207,19 @@ func _http(config *Config) chan struct{} {
 					})
 				}
 
-				// add the handler with the proper middleware
-				log.Printf("[http] %s %s added ...", strings.ToUpper(method), route.Path)
-				ro.With(midware...).Method(method, route.Path, httpHandler(req))
+				multiResponse[method].hfs[i] = httpHandler(req, config.Texts)
+				multiResponse[method].mws[i] = midware
 			}
+		}
+
+		// collect all responses ..
+		for method, v := range multiResponse {
+			hf, mw := v.hfs[0], v.mws[0]
+			v.hfs, v.mws = v.hfs[1:], v.mws[1:]
+
+			// add the handler with the proper middleware
+			log.Printf("[http] %s %s added ...", method, route.Path)
+			ro.With(checkRetries(v)).With(mw...).Method(method, route.Path, hf)
 		}
 	}
 
@@ -194,7 +309,7 @@ func _http(config *Config) chan struct{} {
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					ctx := context.WithValue(r.Context(), ctxKey(server.JWT.Name), server.JWT)
-					ctx = context.WithValue(ctx, sigCtxKey, useJWT(server))
+					ctx = context.WithValue(ctx, CtxKeySignature, useJWT(server))
 					next.ServeHTTP(w, r.WithContext(ctx))
 				})
 			})
@@ -215,6 +330,13 @@ func _http(config *Config) chan struct{} {
 				})
 			})
 		}
+
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := context.WithValue(r.Context(), CtxKeyServerName, server.Name)
+				next.ServeHTTP(w, r.WithContext(ctx))
+			})
+		})
 
 		r.Use(mw.Middlewares()...)
 		r.Mount("/", ro)
@@ -265,6 +387,8 @@ func _http(config *Config) chan struct{} {
 	return shutdown
 }
 
+// serverStats returns the stats around each request
+// NOT YET IMPLEMENTED...
 func serverStats() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "addr:", r.Host)

@@ -14,6 +14,9 @@ import (
 	"github.com/spf13/afero"
 )
 
+// _reload stats a watcher that will collect file access
+// requests and gracefully shutdown the server and restart
+// it after file access is deteremined
 func _reload(config Config) chan struct{} {
 	reload := make(chan struct{}, 1)
 
@@ -24,8 +27,10 @@ func _reload(config Config) chan struct{} {
 		}
 		defer watcher.Close()
 
-		err = watcher.Add(config.internal.file)
-		log.OnErr(err).Printf("[server] adding watcher: %v", err)
+		for _, configFile := range config.internal.files {
+			err = watcher.Add(configFile)
+			log.OnErr(err).Printf("[server] adding watcher: %v", err)
+		}
 
 		for {
 			select {
@@ -59,26 +64,35 @@ type reloadSliceManager struct {
 	r []Route
 }
 
+// isReload will return true if there are configurations already
+// loaded, as these will only be loaded after the HCL file has
+// been processed and the services started
 func (rs *reloadSliceManager) isReload() bool {
 	return len(rs.s) > 0
 }
 
+// put add a service config to the list
 func (rs *reloadSliceManager) put(s []ConfigHTTP, r []Route) {
 	rs.s, rs.r = s, r
 }
 
+// get return the current config and route list
 func (rs *reloadSliceManager) get() ([]ConfigHTTP, []Route) {
 	return rs.s, rs.r
 }
 
+// del empty the lists and return the empty lists
 func (rs *reloadSliceManager) del() {
 	rs.s, rs.r = rs.s[:0], rs.r[:0]
 }
 
+// nil return new, completely empty lists
 func (rs *reloadSliceManager) nil() ([]ConfigHTTP, []Route) {
 	return []ConfigHTTP(nil), []Route(nil)
 }
 
+// reloadError holds info about how errors are handled during
+// a reload
 type reloadError struct {
 	os afero.Fs
 }
@@ -97,6 +111,8 @@ func (re reloadError) save(config Config, save error, kind string) {
 	fmt.Fprintf(f, reloadErrorSaveOut, time.Now().Format(time.RFC1123Z), kind, save)
 }
 
+// zeroOrGreater return a number that is 0 or greater, and negative
+// rnumbers are ounded up to zero
 func (re reloadError) zeroOrGreater(i int) int {
 	if i < 0 {
 		return 0
@@ -104,6 +120,9 @@ func (re reloadError) zeroOrGreater(i int) int {
 	return i
 }
 
+// hln - header line - returns the formatted line that will be used when writing out
+// HTTP headers describing the state of a reload request (either manually or via a
+// file watcher signal)
 func (re reloadError) hln(delim string, length int, format string, v ...interface{}) string {
 	txt := fmt.Sprintf(format, v...)
 
@@ -135,6 +154,7 @@ func (re reloadError) ww(txt string, length int) (rtn []string) {
 	return append(rtn, string(runes))
 }
 
+// headers the headers used when an error has been encountered during a reload request
 func (re reloadError) headers(config *Config, fn func(string, string), hostname string) {
 	var delim, bar, x = "-", "=", 60
 	fn("x-reload-error", strings.Repeat(delim, x))
@@ -150,6 +170,7 @@ func (re reloadError) headers(config *Config, fn func(string, string), hostname 
 	fn("x-reload-error", fmt.Sprintf("for errors see: %s/_internal/reload/errors", hostname))
 }
 
+// handler writes out reload errors when asked for through the internal systems handlers
 func (re reloadError) handler(config *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if config.System == nil || config.System.LogDir == nil {
@@ -182,6 +203,9 @@ func (re reloadError) handler(config *Config) http.HandlerFunc {
 	}
 }
 
+// reloadErrorSaveOut the templated used to write errors to the log
+// the trailing `%s` is for all other previous log entries, so that
+// we can have the latest logged error at the top.
 const reloadErrorSaveOut = `
 ---
 datetime: %s
