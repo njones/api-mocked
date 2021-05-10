@@ -137,28 +137,32 @@ func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptio
 		mgr.del() // remove old copy
 
 		// setup any external plugin
-		files, err := ioutil.ReadDir(pluginDir)
-		if err != nil {
-			log.Fatalf("cannot read plugin dir: %v", err)
-		}
+		if runtime.GOOS != "windows" { // we don't support external plugins on "windows"
+			if _, err := os.Stat(pluginDir); !os.IsNotExist(err) {
+				files, err := ioutil.ReadDir(pluginDir)
+				if err != nil {
+					log.Fatalf("cannot read plugin dir: %v", err)
+				}
 
-		for _, f := range files {
-			ext, err := plugin.Open(pluginDir + f.Name())
-			if err != nil {
-				log.Fatalf("cannot load external plugins: %v", err)
-			}
+				for _, f := range files {
+					ext, err := plugin.Open(pluginDir + f.Name())
+					if err != nil {
+						log.Fatalf("cannot load external plugins: %v", err)
+					}
 
-			setup, err := ext.Lookup("SetupPluginExt")
-			if err != nil {
-				log.Fatalf("cannot lookup setup for plugin: %s %v", f.Name(), err)
-			}
+					setup, err := ext.Lookup("SetupPluginExt")
+					if err != nil {
+						log.Fatalf("cannot lookup setup for plugin: %s %v", f.Name(), err)
+					}
 
-			log.Printf("[init] loading external plugin %s ...", f.Name())
-			pluginName, pluginNew := setup.(func() (string, interface{}))()
-			if plug, ok := pluginNew.(interface{ WithLogger(logger.Logger) }); ok {
-				plug.WithLogger(log)
+					log.Printf("[init] loading external plugin %s ...", f.Name())
+					pluginName, pluginNew := setup.(func() (string, interface{}))()
+					if plug, ok := pluginNew.(interface{ WithLogger(logger.Logger) }); ok {
+						plug.WithLogger(log)
+					}
+					plugins[pluginName] = pluginNew.(Plugin)
+				}
 			}
-			plugins[pluginName] = pluginNew.(Plugin)
 		}
 
 		// setup any internal plugin
