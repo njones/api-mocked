@@ -273,7 +273,7 @@ func _http(config *Config) chan struct{} {
 	// channels used for stopping all of the running servers
 	var stoppers = make([]chan struct{}, len(config.Servers))
 	for i := range stoppers {
-		stoppers[i] = make(chan struct{}, 0)
+		stoppers[i] = make(chan struct{})
 	}
 
 	// how we can wait until all of the servers have gracefully shutdown

@@ -216,9 +216,9 @@ type responseJWT struct {
 	NotBefore  *hcl.Attribute    `hcl:"nbf" json:"nbf"`
 	IssuedAt   *hcl.Attribute    `hcl:"iat" json:"iat"`
 	JWTID      *hcl.Attribute    `hcl:"jti" json:"jti"`
-	Roles      []string          `hcl:"roles,optional" json:"roles,optional"`
-	AuthType   []string          `hcl:"auth_type,optional" json:"auth_type,optional"`
-	Payload    map[string]string `hcl:",remain"`
+	Roles      []string          `hcl:"roles,optional" json:"roles,omitempty"`
+	AuthType   []string          `hcl:"auth_type,optional" json:"auth_type,omitempty"`
+	Payload    map[string]string `hcl:",remain" json:"payload,omitempty"`
 
 	_ctx *hcl.EvalContext
 }

@@ -422,14 +422,8 @@ func execVarCtxPlugin(varsCtx map[string]cty.Value) reqStateFn {
 // execFunCtxStandard executes gathering standard HIL functions
 func execFunCtxStandard(funsCtx map[string]function.Function) reqStateFn {
 	return func(st *reqState) reqStateFn {
-		type plugFns interface {
-			Functions() map[string]function.Function
-		}
-
 		funsCtx["file"] = FileToStr("", "")
-
 		funsCtx["text"] = TextBlockToStr(st.txts)
-
 		funsCtx["standard placeholder"] = function.Function{} // a placeholder, standard functions have a different root
 		return execAddFunctions(funsCtx)
 	}

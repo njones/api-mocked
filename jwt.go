@@ -282,7 +282,7 @@ func (r *responseJWT) Valid() error {
 
 	// The claims below are optional, by default, so if they are set to the
 	// default value in Go, let's not fail the verification for them.
-	if r.VerifyExpiresAt(now, false) == false {
+	if !r.VerifyExpiresAt(now, false) {
 		useImpliedZeroIndex(r.Expiration)
 		num, _ := r.Expiration.Expr.Value(r._ctx)
 		expiresAt, _ := num.AsBigFloat().Int64()
@@ -291,12 +291,12 @@ func (r *responseJWT) Valid() error {
 		vErr.Errors |= jwtgo.ValidationErrorExpired
 	}
 
-	if r.VerifyIssuedAt(now, false) == false {
-		vErr.Inner = fmt.Errorf("Token used before issued")
+	if !r.VerifyIssuedAt(now, false) {
+		vErr.Inner = fmt.Errorf("token used before issued")
 		vErr.Errors |= jwtgo.ValidationErrorIssuedAt
 	}
 
-	if r.VerifyNotBefore(now, false) == false {
+	if !r.VerifyNotBefore(now, false) {
 		vErr.Inner = fmt.Errorf("token is not valid yet")
 		vErr.Errors |= jwtgo.ValidationErrorNotValidYet
 	}
