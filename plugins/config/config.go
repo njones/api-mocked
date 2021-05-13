@@ -1,6 +1,8 @@
 package config
 
 import (
+	"io"
+
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -11,6 +13,22 @@ type Plugin interface {
 	Metadata() string    // a string with the plugin semver, author
 	SetupRoot(hcl.Body) error
 	SetupConfig(string, hcl.Body) error // can be called multiple times
+}
+
+// PluginCleanup is defined for plugins that need to
+// clean up after themselves. This is called on
+// shutdown and reload.
+type PluginCleanup interface {
+	Cleanup(isReload bool) error // is reload is True when only reloading
+}
+
+// PluginConfigFile is defined for plugins
+// that would like to get a copy of the config
+// file. Once it's been read and the plugin has
+// been loaded then the config file will
+// be received.
+type PluginConfigFile interface {
+	ConfigFile() io.Writer // the io.writer can be nil
 }
 
 type HTTP struct {

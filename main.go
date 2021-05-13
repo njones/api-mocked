@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"plugin"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -73,6 +74,15 @@ func main() {
 	log.Println(run(configFiles, logDir, pluginDir))
 }
 
+func passedFlag(name string) (found bool) {
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
 // run reads configs and starts the process. This can be kicked off from tests
 // to make the program more testable. Pulls in the config file location, the
 // log directory (where error logs are stored) and the external .so plugin directory
@@ -109,7 +119,10 @@ func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptio
 
 	if config.System != nil && config.System.LogDir != nil {
 		if _, err := config.internal.os.Stat(*config.System.LogDir); os.IsNotExist(err) {
-			log.Fatalf("[server] the log dir: %v does not exist", *config.System.LogDir)
+			if passedFlag("log") {
+				log.Fatalf("[server] the log dir: %v does not exist", *config.System.LogDir)
+			}
+			log.Println("[server] SKIPPING logging of reload and panic errors, explictly pass the flag")
 		}
 	} else {
 		log.Println("[server] SKIPPING logging of reload and panic errors")
@@ -166,6 +179,7 @@ func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptio
 		}
 
 		// setup any internal plugin
+		var shutdownPlugins = make(map[string]plug.PluginCleanup) // TODO(njones): only make this if we need to...
 		for name, plugin := range plugins {
 			log.Printf("[plugin] root init %v", name)
 			if err := plugin.Setup(); err != nil {
@@ -179,6 +193,9 @@ func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptio
 					log.Printf("[setup] config plugin err: %v", err)
 				}
 			}
+			if p, ok := plugin.(plug.PluginCleanup); ok {
+				shutdownPlugins[name] = p
+			}
 		}
 
 		// run all of the servers (usually HTTP(s))
@@ -190,10 +207,28 @@ func run(configFiles []string, logDir string, pluginDir string, opts ...RunOptio
 			config.reloadDrain(shutdown)
 			config.internal.svrCfgLoad = time.Now()
 			config.internal.svrCfgLoadValid = true
+			if len(shutdownPlugins) > 0 {
+				log.Println("[server] plugins cleanup ...")
+				for name, plugin := range shutdownPlugins {
+					log.Println("[cleanup] plugin " + name + " ...")
+					err := plugin.Cleanup(true)
+					_ = err // for now ignore. TODO(njones) Handle error
+				}
+			}
+
 			log.Println("[server] reloading ...")
 
 			mgr.put(config.Servers, config.Routes) // save a copy
 		case <-shutdown:
+			// cleanup plugins before shutting down for good
+			if len(shutdownPlugins) > 0 {
+				log.Println("[server] plugins cleanup ...")
+				for name, plugin := range shutdownPlugins {
+					log.Println("[cleanup] plugin " + name + " ...")
+					err := plugin.Cleanup(false)
+					_ = err // for now ignore. TODO(njones) Handle error
+				}
+			}
 			return "Done"
 		}
 	}

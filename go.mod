@@ -17,8 +17,10 @@ require (
 	github.com/pubnub/go v4.10.0+incompatible
 	github.com/rs/xid v1.2.1
 	github.com/spf13/afero v1.5.1
+	github.com/stretchr/testify v1.6.1 // indirect
 	github.com/tidwall/pretty v1.1.0
 	github.com/zclconf/go-cty v1.2.0
+	golang.org/x/tools v0.0.0-20200509030707-2212a7e161a5 // indirect
 	plugins/config v0.0.0
 	plugins/request v0.0.0
 	plugins/response v0.0.0
