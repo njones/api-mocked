@@ -1,6 +1,6 @@
 # API-Mocked
 
-API-Mocked is a stand-alone HTTP(s)/Websocket servers for serving known (usually quite static) content.
+API-Mocked is a stand-alone HTTP(s)+ server(s) for serving known (usually static) content.
 
 # Table of Content
 - [Overview](#overview)
